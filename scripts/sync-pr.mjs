@@ -285,13 +285,17 @@ async function addLabel(owner, repo, number, name) {
 
 // ---------- Discord ops ----------
 
-function buildInitialPost(pr) {
+function buildInitialPost(pr, userMap = {}) {
   const title = `**[#${pr.number} ${pr.title}](${pr.html_url})**`;
-  const author = `by @${pr.user.login}`;
+  const authorLogin = pr.user.login;
+  const authorId = userMap[authorLogin];
+  const authorMention = authorId ? `<@${authorId}>` : `@${authorLogin}`;
   const branches = `\`${pr.head.ref} → ${pr.base.ref}\``;
   const body = (pr.body || "").trim().slice(0, 300);
   const bodyLine = body ? `\n\n${body}${pr.body && pr.body.length > 300 ? "…" : ""}` : "";
-  return `${title} ${author}\n${branches}${bodyLine}`;
+  const content = `${title} by ${authorMention}\n${branches}${bodyLine}`;
+  const mentionUserIds = authorId ? [authorId] : [];
+  return { content, mentionUserIds };
 }
 
 function threadName(pr) {
@@ -300,13 +304,16 @@ function threadName(pr) {
   return raw.length > 100 ? raw.slice(0, 99) + "…" : raw;
 }
 
-async function createForumThread(pr, tagId) {
+async function createForumThread(pr, tagId, userMap = {}) {
+  const { content, mentionUserIds } = buildInitialPost(pr, userMap);
+  const allowed_mentions =
+    mentionUserIds.length > 0 ? { parse: [], users: mentionUserIds } : { parse: [] };
   const res = await discord(`/channels/${DISCORD_FORUM_CHANNEL_ID}/threads`, {
     method: "POST",
     body: JSON.stringify({
       name: threadName(pr),
       applied_tags: [tagId],
-      message: { content: buildInitialPost(pr), allowed_mentions: { parse: [] } },
+      message: { content, allowed_mentions },
     }),
   });
   if (DRY_RUN) return "DRY_RUN_THREAD_ID";
@@ -471,7 +478,7 @@ async function main() {
       "ededed",
       "Auto-managed by github-discord-pr-sync"
     );
-    threadId = await createForumThread(pr, desiredTagId);
+    threadId = await createForumThread(pr, desiredTagId, userMap);
     const labelName = `${THREAD_LABEL_PREFIX}${threadId}`;
     await ensureLabel(owner, repo, labelName, "ededed", "Discord thread mapping");
     await addLabel(owner, repo, pr.number, labelName);

@@ -117,8 +117,32 @@ test("opened PR: creates new thread with Open tag and writes mapping label", () 
   assert.match(r.stdout, /"name":"discord-thread:DRY_RUN_THREAD_ID"/);
   assert.match(r.stdout, /\/issues\/42\/labels/);
   assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID with tag Open/);
-  // allowed_mentions suppresses @everyone/@here/role/user pings
-  assert.match(r.stdout, /allowed_mentions/);
+  // Without a user map, author renders as plain text and no users are pinged.
+  assert.match(r.stdout, /by @kz/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\]\}/);
+});
+
+test("opened PR with author in user map: pings author in initial post", () => {
+  const r = runFixture("opened.json", "pull_request", {
+    DISCORD_USER_MAP_JSON: JSON.stringify({ kz: "666666666666666666" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Initial post renders the Discord mention instead of plain @login.
+  assert.match(r.stdout, /by <@666666666666666666>/);
+  // allowed_mentions.users includes the author ID so the ping actually fires.
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["666666666666666666"\]\}/);
+  // Plain "@kz" must NOT appear in the content.
+  assert.doesNotMatch(r.stdout, /by @kz/);
+});
+
+test("opened PR with author not in user map: plain-text author, no ping", () => {
+  const r = runFixture("opened.json", "pull_request", {
+    DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "111111111111111111" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /by @kz/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\]\}/);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
 });
 
 test("closed+merged PR: updates existing thread to Merged tag", () => {

@@ -138,6 +138,7 @@ GitHub login to their Discord **user ID** (snowflake):
 To get a Discord user ID, enable Developer Mode in Discord → right-click a user → **Copy
 User ID**. Once configured, the action posts real pings:
 
+- `pull_request.opened` → pings the PR author in the initial post, so the notification itself is a direct jump-link to the new forum thread
 - `pull_request.review_requested` → pings the requested reviewer
 - `pull_request_review.submitted` (approve / changes requested) → pings the PR author
 
