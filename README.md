@@ -63,7 +63,7 @@ Add to repo settings:
 | Secret | `DISCORD_BOT_TOKEN` | The bot token from the Discord developer portal |
 | Variable | `DISCORD_FORUM_CHANNEL_ID` | The forum channel ID for this repo |
 | Variable (optional) | `DISCORD_TAG_IDS_JSON` | Filled in automatically — see step 3 |
-| Variable (optional) | `GITHUB_TO_DISCORD_USER_MAP` | JSON map to @-mention reviewers and authors — see step 4 |
+| Variable (optional) | `DISCORD_USER_MAP_JSON` | JSON map to @-mention reviewers and authors — see step 4 |
 
 Then drop this caller workflow into the repo at
 `.github/workflows/discord-pr-sync.yml`:
@@ -104,7 +104,7 @@ jobs:
           discord-bot-token: ${{ secrets.DISCORD_BOT_TOKEN }}
           discord-forum-channel-id: ${{ vars.DISCORD_FORUM_CHANNEL_ID }}
           discord-tag-ids-json: ${{ vars.DISCORD_TAG_IDS_JSON }}
-          github-to-discord-user-map: ${{ vars.GITHUB_TO_DISCORD_USER_MAP }}
+          github-to-discord-user-map: ${{ vars.DISCORD_USER_MAP_JSON }}
 ```
 
 > **Pinning:** For supply-chain hardening, pin `@v1` to a full commit SHA
@@ -128,7 +128,7 @@ the lookup, saving one Discord API call per event.
 
 By default, `@login` strings in the thread are plain text (no ping). To make the action
 actually notify Discord users when a review is requested or a review is submitted, set
-the `GITHUB_TO_DISCORD_USER_MAP` repo variable to a JSON object mapping each teammate's
+the `DISCORD_USER_MAP_JSON` repo variable to a JSON object mapping each teammate's
 GitHub login to their Discord **user ID** (snowflake):
 
 ```json

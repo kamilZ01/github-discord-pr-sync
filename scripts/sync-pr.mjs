@@ -14,7 +14,7 @@ const {
   DISCORD_BOT_TOKEN,
   DISCORD_FORUM_CHANNEL_ID,
   DISCORD_TAG_IDS_JSON,
-  GITHUB_TO_DISCORD_USER_MAP,
+  DISCORD_USER_MAP_JSON,
 } = process.env;
 
 const TAG_NAMES = [
@@ -140,16 +140,16 @@ async function resolveTagIds() {
 // ---------- User mention map ----------
 
 function loadUserMap() {
-  if (!GITHUB_TO_DISCORD_USER_MAP) return {};
+  if (!DISCORD_USER_MAP_JSON) return {};
   let parsed;
   try {
-    parsed = JSON.parse(GITHUB_TO_DISCORD_USER_MAP);
+    parsed = JSON.parse(DISCORD_USER_MAP_JSON);
   } catch {
-    console.warn("GITHUB_TO_DISCORD_USER_MAP is not valid JSON; mentions disabled.");
+    console.warn("DISCORD_USER_MAP_JSON is not valid JSON; mentions disabled.");
     return {};
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    console.warn("GITHUB_TO_DISCORD_USER_MAP must be a JSON object; mentions disabled.");
+    console.warn("DISCORD_USER_MAP_JSON must be a JSON object; mentions disabled.");
     return {};
   }
   const map = {};
@@ -157,7 +157,7 @@ function loadUserMap() {
     if (typeof id === "string" && DISCORD_SNOWFLAKE_RE.test(id)) {
       map[login] = id;
     } else {
-      console.warn(`GITHUB_TO_DISCORD_USER_MAP: dropping "${login}" — invalid Discord ID.`);
+      console.warn(`DISCORD_USER_MAP_JSON: dropping "${login}" — invalid Discord ID.`);
     }
   }
   return map;

@@ -148,7 +148,7 @@ test("review submitted (changes_requested): updates thread to Changes Requested 
 
 test("review_requested with user map: posts Discord mention with allowed_mentions.users", () => {
   const r = runFixture("review_requested.json", "pull_request", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "111111111111111111" }),
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /<@111111111111111111>/);
@@ -167,7 +167,7 @@ test("review_requested without user map: plain text, no ping", () => {
 
 test("review_requested with map missing this reviewer: plain text fallback", () => {
   const r = runFixture("review_requested.json", "pull_request", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "222222222222222222" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ bob: "222222222222222222" }),
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /review requested from @alice/);
@@ -176,7 +176,7 @@ test("review_requested with map missing this reviewer: plain text fallback", () 
 
 test("review submitted: pings PR author when mapped", () => {
   const r = runFixture("review_changes_requested.json", "pull_request_review", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ kz: "333333333333333333" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ kz: "333333333333333333" }),
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /🛠️ Changes requested by @bob — cc <@333333333333333333>/);
@@ -185,7 +185,7 @@ test("review submitted: pings PR author when mapped", () => {
 
 test("review submitted: no cc when author has no mapping", () => {
   const r = runFixture("review_changes_requested.json", "pull_request_review", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "444444444444444444" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ bob: "444444444444444444" }),
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /🛠️ Changes requested by @bob/);
@@ -195,7 +195,7 @@ test("review submitted: no cc when author has no mapping", () => {
 
 test("invalid Discord IDs in user map are dropped with a warning", () => {
   const r = runFixture("review_requested.json", "pull_request", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "not-a-snowflake" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "not-a-snowflake" }),
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stderr, /dropping "alice"/);
@@ -203,9 +203,9 @@ test("invalid Discord IDs in user map are dropped with a warning", () => {
   assert.doesNotMatch(r.stdout, /"users":\[/);
 });
 
-test("malformed GITHUB_TO_DISCORD_USER_MAP: warns and disables mentions", () => {
+test("malformed DISCORD_USER_MAP_JSON: warns and disables mentions", () => {
   const r = runFixture("review_requested.json", "pull_request", {
-    GITHUB_TO_DISCORD_USER_MAP: "{not json",
+    DISCORD_USER_MAP_JSON: "{not json",
   });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stderr, /not valid JSON/);
@@ -217,7 +217,7 @@ test("review_requested with tag already Open: posts 🔔 mention without tag upd
   // DRY_RUN_CURRENT_TAG_ID=2 simulates an existing thread that's already
   // tagged Open, so main() takes the tag-unchanged branch of the status flow.
   const r = runFixture("review_requested.json", "pull_request", {
-    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+    DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "111111111111111111" }),
     DRY_RUN_CURRENT_TAG_ID: "2",
   });
   assert.equal(r.code, 0, r.stderr);
@@ -243,7 +243,7 @@ test("review submitted: self-review (author === reviewer) does not cc author", (
     env: {
       GITHUB_EVENT_PATH: fixturePath,
       GITHUB_EVENT_NAME: "pull_request_review",
-      GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "555555555555555555" }),
+      DISCORD_USER_MAP_JSON: JSON.stringify({ bob: "555555555555555555" }),
     },
   });
 
@@ -266,7 +266,7 @@ test("review_requested for a team: uses team name as plain text, no ping", () =>
     env: {
       GITHUB_EVENT_PATH: fixturePath,
       GITHUB_EVENT_NAME: "pull_request",
-      GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+      DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "111111111111111111" }),
     },
   });
 

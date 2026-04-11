@@ -50,4 +50,4 @@ runs:
         DISCORD_BOT_TOKEN: ${{ inputs.discord-bot-token }}
         DISCORD_FORUM_CHANNEL_ID: ${{ inputs.discord-forum-channel-id }}
         DISCORD_TAG_IDS_JSON: ${{ inputs.discord-tag-ids-json }}
-        GITHUB_TO_DISCORD_USER_MAP: ${{ inputs.github-to-discord-user-map }}
+        DISCORD_USER_MAP_JSON: ${{ inputs.github-to-discord-user-map }}
