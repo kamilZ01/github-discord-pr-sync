@@ -3,10 +3,11 @@
 //
 // Strategy: spawn the script as a subprocess in --dry-run mode against
 // fixture event payloads and assert on stdout/stderr/exit-code. Dry-run
-// short-circuits all non-GET HTTP requests, and the fixtures are chosen
-// so the script never needs to make GET requests either (DISCORD_TAG_IDS_JSON
-// is set so resolveTagIds skips the channel fetch, and no fixture exercises
-// a code path that calls fetchReviews/getThread under DRY_RUN).
+// short-circuits non-GET HTTP requests and also stubs the PR-reviews GET
+// (needed by the review_requested path). DISCORD_TAG_IDS_JSON is set so
+// resolveTagIds skips the Discord channel fetch. The Discord /channels/:id
+// GET used by getThread is not called under dry-run — tests can instead set
+// DRY_RUN_CURRENT_TAG_ID to simulate a thread that already has a given tag.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -141,6 +142,137 @@ test("review submitted (changes_requested): updates thread to Changes Requested 
   assert.match(r.stdout, /"applied_tags":\["3"\]/);
   assert.match(r.stdout, /🛠️ Changes requested by @bob/);
   assert.match(r.stdout, /Updated thread 1234567890 → Changes Requested/);
+});
+
+// ---------- Mentions ----------
+
+test("review_requested with user map: posts Discord mention with allowed_mentions.users", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /<@111111111111111111>/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["111111111111111111"\]\}/);
+  assert.match(r.stdout, /review requested from <@111111111111111111>/);
+});
+
+test("review_requested without user map: plain text, no ping", () => {
+  const r = runFixture("review_requested.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /review requested from @alice/);
+  // No user IDs in allowed_mentions
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\]\}/);
+});
+
+test("review_requested with map missing this reviewer: plain text fallback", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "222222222222222222" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /review requested from @alice/);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+});
+
+test("review submitted: pings PR author when mapped", () => {
+  const r = runFixture("review_changes_requested.json", "pull_request_review", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ kz: "333333333333333333" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /🛠️ Changes requested by @bob — cc <@333333333333333333>/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["333333333333333333"\]\}/);
+});
+
+test("review submitted: no cc when author has no mapping", () => {
+  const r = runFixture("review_changes_requested.json", "pull_request_review", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "444444444444444444" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /🛠️ Changes requested by @bob/);
+  assert.doesNotMatch(r.stdout, / — cc </);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+});
+
+test("invalid Discord IDs in user map are dropped with a warning", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "not-a-snowflake" }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stderr, /dropping "alice"/);
+  assert.match(r.stdout, /review requested from @alice/);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+});
+
+test("malformed GITHUB_TO_DISCORD_USER_MAP: warns and disables mentions", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    GITHUB_TO_DISCORD_USER_MAP: "{not json",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stderr, /not valid JSON/);
+  assert.match(r.stdout, /review requested from @alice/);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+});
+
+test("review_requested with tag already Open: posts 🔔 mention without tag update", () => {
+  // DRY_RUN_CURRENT_TAG_ID=2 simulates an existing thread that's already
+  // tagged Open, so main() takes the tag-unchanged branch of the status flow.
+  const r = runFixture("review_requested.json", "pull_request", {
+    GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+    DRY_RUN_CURRENT_TAG_ID: "2",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Tag-change PATCH must NOT fire.
+  assert.doesNotMatch(r.stdout, /"applied_tags":/);
+  // 🔔 branch posted with real ping.
+  assert.match(r.stdout, /🔔 Review requested from <@111111111111111111>/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["111111111111111111"\]\}/);
+});
+
+test("review submitted: self-review (author === reviewer) does not cc author", () => {
+  const base = JSON.parse(readFileSync(join(FIXTURES, "review_changes_requested.json"), "utf8"));
+  // Author reviewing their own PR — bob becomes both reviewer and PR author.
+  base.review.user.login = "bob";
+  base.sender.login = "bob";
+  base.pull_request.user.login = "bob";
+
+  const dir = mkdtempSync(join(tmpdir(), "sync-pr-test-"));
+  const fixturePath = join(dir, "self-review.json");
+  writeFileSync(fixturePath, JSON.stringify(base), "utf8");
+
+  const r = run({
+    env: {
+      GITHUB_EVENT_PATH: fixturePath,
+      GITHUB_EVENT_NAME: "pull_request_review",
+      GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ bob: "555555555555555555" }),
+    },
+  });
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /🛠️ Changes requested by @bob/);
+  assert.doesNotMatch(r.stdout, / — cc </);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
+});
+
+test("review_requested for a team: uses team name as plain text, no ping", () => {
+  const base = JSON.parse(readFileSync(join(FIXTURES, "review_requested.json"), "utf8"));
+  delete base.requested_reviewer;
+  base.requested_team = { name: "Platform", slug: "platform" };
+
+  const dir = mkdtempSync(join(tmpdir(), "sync-pr-test-"));
+  const fixturePath = join(dir, "team-review-requested.json");
+  writeFileSync(fixturePath, JSON.stringify(base), "utf8");
+
+  const r = run({
+    env: {
+      GITHUB_EVENT_PATH: fixturePath,
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_TO_DISCORD_USER_MAP: JSON.stringify({ alice: "111111111111111111" }),
+    },
+  });
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /review requested from team `Platform`/);
+  assert.doesNotMatch(r.stdout, /"users":\[/);
 });
 
 // ---------- Edit handling ----------

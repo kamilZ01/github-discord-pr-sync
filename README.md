@@ -63,6 +63,7 @@ Add to repo settings:
 | Secret | `DISCORD_BOT_TOKEN` | The bot token from the Discord developer portal |
 | Variable | `DISCORD_FORUM_CHANNEL_ID` | The forum channel ID for this repo |
 | Variable (optional) | `DISCORD_TAG_IDS_JSON` | Filled in automatically — see step 3 |
+| Variable (optional) | `GITHUB_TO_DISCORD_USER_MAP` | JSON map to @-mention reviewers and authors — see step 4 |
 
 Then drop this caller workflow into the repo at
 `.github/workflows/discord-pr-sync.yml`:
@@ -103,6 +104,7 @@ jobs:
           discord-bot-token: ${{ secrets.DISCORD_BOT_TOKEN }}
           discord-forum-channel-id: ${{ vars.DISCORD_FORUM_CHANNEL_ID }}
           discord-tag-ids-json: ${{ vars.DISCORD_TAG_IDS_JSON }}
+          github-to-discord-user-map: ${{ vars.GITHUB_TO_DISCORD_USER_MAP }}
 ```
 
 > **Pinning:** For supply-chain hardening, pin `@v1` to a full commit SHA
@@ -122,6 +124,26 @@ Resolved Discord tag ids. Cache them by setting repo variable DISCORD_TAG_IDS_JS
 Copy that JSON into a repo variable named `DISCORD_TAG_IDS_JSON`. Subsequent runs skip
 the lookup, saving one Discord API call per event.
 
+### 4. Optional: real Discord @-mentions for reviewers
+
+By default, `@login` strings in the thread are plain text (no ping). To make the action
+actually notify Discord users when a review is requested or a review is submitted, set
+the `GITHUB_TO_DISCORD_USER_MAP` repo variable to a JSON object mapping each teammate's
+GitHub login to their Discord **user ID** (snowflake):
+
+```json
+{"alice":"123456789012345678","bob":"234567890123456789"}
+```
+
+To get a Discord user ID, enable Developer Mode in Discord → right-click a user → **Copy
+User ID**. Once configured, the action posts real pings:
+
+- `pull_request.review_requested` → pings the requested reviewer
+- `pull_request_review.submitted` (approve / changes requested) → pings the PR author
+
+Only the explicit user IDs in this map are allowed to ping; `@everyone`, `@here`, and
+role mentions are always suppressed. Unmapped logins fall back to plain-text `@login`.
+
 ## Local dry-run
 
 You can test the script without touching Discord:
@@ -137,9 +159,11 @@ DISCORD_TAG_IDS_JSON='{"Draft":"1","Open":"2","Changes Requested":"3","Re-review
 node scripts/sync-pr.mjs --dry-run
 ```
 
-`--dry-run` logs the would-be Discord writes instead of sending them. GitHub reads still
-hit the network, so for fully offline runs use a fixture whose action doesn't trigger a
-review/PR fetch (e.g. `opened.json`).
+`--dry-run` logs the would-be Discord writes instead of sending them. The PR-reviews
+GET (`/pulls/:n/reviews`) is also stubbed to return `[]` so `review_requested` and
+similar branches don't need network access. Set `DISCORD_TAG_IDS_JSON` (as shown above)
+to skip the Discord channel fetch — otherwise the script will still call Discord to
+resolve tag IDs, since that GET is not stubbed.
 
 ## Tests
 

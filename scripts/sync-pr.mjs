@@ -14,6 +14,7 @@ const {
   DISCORD_BOT_TOKEN,
   DISCORD_FORUM_CHANNEL_ID,
   DISCORD_TAG_IDS_JSON,
+  GITHUB_TO_DISCORD_USER_MAP,
 } = process.env;
 
 const TAG_NAMES = [
@@ -36,6 +37,9 @@ const STATUS_LINES = {
   Closed: "⚪ Closed without merging",
 };
 
+const THREAD_LABEL_PREFIX = "discord-thread:";
+const DISCORD_SNOWFLAKE_RE = /^\d{5,25}$/;
+
 // ---------- HTTP helpers ----------
 
 async function http(url, init = {}, { retried = false } = {}) {
@@ -43,6 +47,18 @@ async function http(url, init = {}, { retried = false } = {}) {
     console.log(`[dry-run] ${init.method} ${url}`);
     if (init.body) console.log(`[dry-run] body: ${init.body}`);
     return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+  }
+  if (
+    DRY_RUN &&
+    (!init.method || init.method === "GET") &&
+    url.startsWith("https://api.github.com") &&
+    /\/pulls\/\d+\/reviews/.test(url)
+  ) {
+    // Stub the PR-reviews GET in dry-run so tests can exercise branches that
+    // fetch reviews (e.g. review_requested) without network access. Returns an
+    // empty array — callers only use it to count prior reviews.
+    console.log(`[dry-run] GET ${url}`);
+    return { ok: true, status: 200, json: async () => [], text: async () => "[]" };
   }
   const res = await fetch(url, init);
   if (res.status === 429 && !retried) {
@@ -118,6 +134,32 @@ async function resolveTagIds() {
       map
     )}`
   );
+  return map;
+}
+
+// ---------- User mention map ----------
+
+function loadUserMap() {
+  if (!GITHUB_TO_DISCORD_USER_MAP) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(GITHUB_TO_DISCORD_USER_MAP);
+  } catch {
+    console.warn("GITHUB_TO_DISCORD_USER_MAP is not valid JSON; mentions disabled.");
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("GITHUB_TO_DISCORD_USER_MAP must be a JSON object; mentions disabled.");
+    return {};
+  }
+  const map = {};
+  for (const [login, id] of Object.entries(parsed)) {
+    if (typeof id === "string" && DISCORD_SNOWFLAKE_RE.test(id)) {
+      map[login] = id;
+    } else {
+      console.warn(`GITHUB_TO_DISCORD_USER_MAP: dropping "${login}" — invalid Discord ID.`);
+    }
+  }
   return map;
 }
 
@@ -200,9 +242,6 @@ async function computeDesiredState(event, eventName, owner, repo) {
 }
 
 // ---------- Label helpers ----------
-
-const THREAD_LABEL_PREFIX = "discord-thread:";
-const DISCORD_SNOWFLAKE_RE = /^\d{5,25}$/;
 
 function findThreadIdFromLabels(pr) {
   let found = null;
@@ -294,11 +333,64 @@ async function updateThreadName(threadId, name) {
   });
 }
 
-async function postThreadMessage(threadId, content) {
+async function postThreadMessage(threadId, content, mentionUserIds = []) {
+  const allowed_mentions =
+    mentionUserIds.length > 0 ? { parse: [], users: mentionUserIds } : { parse: [] };
   await discord(`/channels/${threadId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+    body: JSON.stringify({ content, allowed_mentions }),
   });
+}
+
+// Build the status/mention message for a thread update.
+//
+// Returns { content, mentionUserIds }. mentionUserIds is the set of Discord
+// snowflakes that must be echoed into allowed_mentions.users for the ping to
+// actually fire.
+//
+// Note on "opened" with reviewers: we deliberately don't mention reviewers
+// here. GitHub fires a separate pull_request.review_requested event for each
+// reviewer pre-assigned at PR creation, so those reviewers get pinged via the
+// review_requested branch — mentioning them again on "opened" would double-ping.
+function buildStatusMessage({ desired, event, eventName, userMap, tagChanged }) {
+  const mentionUserIds = [];
+  const pushMention = (login) => {
+    const id = userMap[login];
+    if (id) {
+      mentionUserIds.push(id);
+      return `<@${id}>`;
+    }
+    return `@${login}`;
+  };
+
+  if (eventName === "pull_request" && event.action === "review_requested") {
+    // GitHub sends `requested_reviewer` for user requests and `requested_team`
+    // for team requests. Teams can't be pinged via user snowflakes, so they
+    // fall back to a plain-text team name.
+    const reviewerLogin = event.requested_reviewer?.login;
+    const teamName = event.requested_team?.name || event.requested_team?.slug;
+    let mention;
+    if (reviewerLogin) mention = pushMention(reviewerLogin);
+    else if (teamName) mention = `team \`${teamName}\``;
+    else mention = "someone";
+    const content = tagChanged
+      ? `${STATUS_LINES[desired]} — review requested from ${mention}`
+      : `🔔 Review requested from ${mention}`;
+    return { content, mentionUserIds };
+  }
+
+  const actor = event.review?.user?.login || event.sender?.login || "someone";
+  let content = `${STATUS_LINES[desired]} by @${actor}`;
+
+  if (eventName === "pull_request_review" && event.action === "submitted") {
+    const authorLogin = event.pull_request?.user?.login;
+    if (authorLogin && authorLogin !== actor && userMap[authorLogin]) {
+      mentionUserIds.push(userMap[authorLogin]);
+      content += ` — cc <@${userMap[authorLogin]}>`;
+    }
+  }
+
+  return { content, mentionUserIds };
 }
 
 // ---------- Main ----------
@@ -339,6 +431,7 @@ async function main() {
   const [owner, repo] = repoFull.split("/");
 
   const tagIds = await resolveTagIds();
+  const userMap = loadUserMap();
 
   // Title-only edit: just rename the thread, no tag change.
   if (eventName === "pull_request" && event.action === "edited") {
@@ -388,18 +481,39 @@ async function main() {
 
   // Existing thread: compare current vs desired tags, update if different.
   let currentTags = [];
-  if (!DRY_RUN) {
+  if (DRY_RUN) {
+    // Test hook: lets suites simulate a thread that already has a given tag,
+    // so the tag-unchanged branch of main() can be exercised without network.
+    const stub = process.env.DRY_RUN_CURRENT_TAG_ID;
+    if (stub) currentTags = [stub];
+  } else {
     const thread = await getThread(threadId);
     currentTags = thread.applied_tags || [];
   }
-  if (currentTags.length === 1 && currentTags[0] === desiredTagId) {
+  const tagChanged = !(currentTags.length === 1 && currentTags[0] === desiredTagId);
+  if (tagChanged) {
+    await updateThreadTags(threadId, desiredTagId);
+  }
+
+  // review_requested must post a mention even when the tag stays the same
+  // (e.g. first review request on a fresh PR — state remains "Open").
+  const isReviewRequested =
+    eventName === "pull_request" && event.action === "review_requested";
+  const needsStatusLine = tagChanged || isReviewRequested;
+
+  if (!needsStatusLine) {
     console.log(`Tag already ${desired}; nothing to do.`);
     return;
   }
-  await updateThreadTags(threadId, desiredTagId);
-  const actor = event.review?.user?.login || event.sender?.login || "someone";
-  const line = `${STATUS_LINES[desired]} by @${actor}`;
-  await postThreadMessage(threadId, line);
+
+  const { content, mentionUserIds } = buildStatusMessage({
+    desired,
+    event,
+    eventName,
+    userMap,
+    tagChanged,
+  });
+  await postThreadMessage(threadId, content, mentionUserIds);
   console.log(`Updated thread ${threadId} → ${desired}`);
 }
 
