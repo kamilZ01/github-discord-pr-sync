@@ -34,7 +34,7 @@ const STATUS_LINES = {
   "Re-review Requested": "🔁 Re-review requested",
   Approved: "✅ Approved",
   Merged: "🟣 Merged",
-  Closed: "⚪ Closed without merging",
+  Closed: "🔴 Closed without merging",
 };
 
 const THREAD_LABEL_PREFIX = "discord-thread:";
@@ -298,9 +298,16 @@ function buildInitialPost(pr, userMap = {}) {
   return { content, mentionUserIds };
 }
 
+function prefixState(pr) {
+  if (pr.state !== "closed") return null;
+  return pr.merged ? "Merged" : "Closed";
+}
+
 function threadName(pr) {
   // Discord thread name max 100 chars.
-  const raw = `#${pr.number} ${pr.title}`;
+  const state = prefixState(pr);
+  const prefix = state === "Merged" ? "🟣 " : state === "Closed" ? "🔴 " : "";
+  const raw = `${prefix}#${pr.number} ${pr.title}`;
   return raw.length > 100 ? raw.slice(0, 99) + "…" : raw;
 }
 
@@ -326,17 +333,10 @@ async function getThread(threadId) {
   return await res.json();
 }
 
-async function updateThreadTags(threadId, tagId) {
+async function updateThread(threadId, fields) {
   await discord(`/channels/${threadId}`, {
     method: "PATCH",
-    body: JSON.stringify({ applied_tags: [tagId] }),
-  });
-}
-
-async function updateThreadName(threadId, name) {
-  await discord(`/channels/${threadId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(fields),
   });
 }
 
@@ -453,7 +453,7 @@ async function main() {
       return;
     }
     assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
-    await updateThreadName(threadId, threadName(pr));
+    await updateThread(threadId, { name: threadName(pr) });
     console.log(`Renamed thread ${threadId}`);
     return;
   }
@@ -486,20 +486,33 @@ async function main() {
     return;
   }
 
-  // Existing thread: compare current vs desired tags, update if different.
+  // Existing thread: compare current tags and name, update if different.
+  const newName = threadName(pr);
   let currentTags = [];
+  let currentName = "";
   if (DRY_RUN) {
-    // Test hook: lets suites simulate a thread that already has a given tag,
-    // so the tag-unchanged branch of main() can be exercised without network.
+    // Test hooks: simulate a thread that already has a given tag/name without
+    // network access. DRY_RUN_CURRENT_THREAD_NAME uses ?? (not ||) so empty
+    // string is a valid stub; when unset, defaults to newName (no name change).
     const stub = process.env.DRY_RUN_CURRENT_TAG_ID;
     if (stub) currentTags = [stub];
+    currentName = process.env.DRY_RUN_CURRENT_THREAD_NAME ?? newName;
   } else {
     const thread = await getThread(threadId);
     currentTags = thread.applied_tags || [];
+    currentName = thread.name || "";
   }
+
   const tagChanged = !(currentTags.length === 1 && currentTags[0] === desiredTagId);
-  if (tagChanged) {
-    await updateThreadTags(threadId, desiredTagId);
+  const nameChanged = currentName !== newName;
+
+  // Combined PATCH for tag and/or name.
+  if (tagChanged && nameChanged) {
+    await updateThread(threadId, { applied_tags: [desiredTagId], name: newName });
+  } else if (tagChanged) {
+    await updateThread(threadId, { applied_tags: [desiredTagId] });
+  } else if (nameChanged) {
+    await updateThread(threadId, { name: newName });
   }
 
   // review_requested must post a mention even when the tag stays the same
@@ -509,7 +522,11 @@ async function main() {
   const needsStatusLine = tagChanged || isReviewRequested;
 
   if (!needsStatusLine) {
-    console.log(`Tag already ${desired}; nothing to do.`);
+    if (nameChanged) {
+      console.log(`Updated thread ${threadId} name`);
+    } else {
+      console.log(`Tag already ${desired}; nothing to do.`);
+    }
     return;
   }
 

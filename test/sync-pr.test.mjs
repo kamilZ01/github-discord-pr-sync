@@ -7,7 +7,9 @@
 // (needed by the review_requested path). DISCORD_TAG_IDS_JSON is set so
 // resolveTagIds skips the Discord channel fetch. The Discord /channels/:id
 // GET used by getThread is not called under dry-run — tests can instead set
-// DRY_RUN_CURRENT_TAG_ID to simulate a thread that already has a given tag.
+// DRY_RUN_CURRENT_TAG_ID to simulate a thread that already has a given tag,
+// and DRY_RUN_CURRENT_THREAD_NAME to simulate the current thread name (defaults
+// to the computed new name when unset, so existing tests are unaffected).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -145,13 +147,16 @@ test("opened PR with author not in user map: plain-text author, no ping", () => 
   assert.doesNotMatch(r.stdout, /"users":\[/);
 });
 
-test("closed+merged PR: updates existing thread to Merged tag", () => {
-  const r = runFixture("closed_merged.json", "pull_request");
+test("closed+merged PR: updates existing thread to Merged tag and prefixed name", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh",
+  });
   assert.equal(r.code, 0, r.stderr);
   // PATCH to existing thread id from label
   assert.match(r.stdout, /PATCH https:\/\/discord\.com\/api\/v10\/channels\/1234567890/);
-  // Merged tag id (6) applied
+  // Merged tag id (6) and prefixed name in a single PATCH
   assert.match(r.stdout, /"applied_tags":\["6"\]/);
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh"/);
   // Status message posted
   assert.match(r.stdout, /🟣 Merged by @kz/);
   assert.match(r.stdout, /Updated thread 1234567890 → Merged/);
@@ -394,4 +399,76 @@ test("invalid discord-thread label id: exits safely before Discord writes", () =
   assert.match(r.stderr, /Invalid Discord thread id in label/);
   assert.doesNotMatch(r.stdout, /PATCH/);
   assert.doesNotMatch(r.stdout, /POST/);
+});
+
+// ---------- Thread name prefixes ----------
+
+test("closed without merge: updates thread to Closed tag and 🔴 prefixed name", () => {
+  const r = runFixture("closed_not_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh",
+    DRY_RUN_CURRENT_TAG_ID: "2", // was Open
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["7"\]/);
+  assert.match(r.stdout, /"name":"🔴 #42 Add retry logic to token refresh"/);
+  assert.match(r.stdout, /🔴 Closed without merging by @kz/);
+  assert.match(r.stdout, /Updated thread 1234567890 → Closed/);
+});
+
+test("title edit on merged PR: thread name includes 🟣 prefix", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /PATCH https:\/\/discord\.com\/api\/v10\/channels\/1234567890/);
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
+  assert.match(r.stdout, /Renamed thread 1234567890/);
+  assert.doesNotMatch(r.stdout, /applied_tags/);
+});
+
+test("title edit on open PR: thread name has no prefix", () => {
+  const r = runFixture("edited_title.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"name":"#42 Add retry logic to token refresh \(v2\)"/);
+  assert.doesNotMatch(r.stdout, /🟣/);
+  assert.doesNotMatch(r.stdout, /🔴/);
+});
+
+test("name-only update (tag already correct): patches name without status message", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "6", // already Merged
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh", // legacy unprefixed
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Name-only PATCH (no applied_tags)
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh"/);
+  assert.doesNotMatch(r.stdout, /applied_tags/);
+  // No status message posted — only name updated
+  assert.match(r.stdout, /Updated thread 1234567890 name/);
+  assert.doesNotMatch(r.stdout, /🟣 Merged by/);
+});
+
+test("merged PR with long title: prefix + title truncated to 100 chars", () => {
+  const base = JSON.parse(readFileSync(join(FIXTURES, "closed_merged.json"), "utf8"));
+  base.pull_request.title = "A".repeat(95);
+
+  const dir = mkdtempSync(join(tmpdir(), "sync-pr-test-"));
+  const fixturePath = join(dir, "long-title-merged.json");
+  writeFileSync(fixturePath, JSON.stringify(base), "utf8");
+
+  const r = run({
+    env: {
+      GITHUB_EVENT_PATH: fixturePath,
+      GITHUB_EVENT_NAME: "pull_request",
+      DRY_RUN_CURRENT_THREAD_NAME: "#42 " + "A".repeat(95),
+    },
+  });
+
+  assert.equal(r.code, 0, r.stderr);
+  // Extract the thread name from the PATCH body
+  const nameMatch = r.stdout.match(/"name":"([^"]+)"/);
+  assert.ok(nameMatch, "PATCH should include a name field");
+  const threadName = nameMatch[1];
+  // Must start with prefix and end with ellipsis, total ≤ 100 chars
+  assert.ok(threadName.startsWith("🟣 #42 "), "should start with 🟣 prefix");
+  assert.ok(threadName.endsWith("…"), "should end with ellipsis");
+  assert.ok(threadName.length <= 100, `thread name should be ≤100 chars, got ${threadName.length}`);
 });

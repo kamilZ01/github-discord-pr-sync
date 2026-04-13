@@ -183,7 +183,7 @@ In one test repo, after wiring the caller workflow:
 - [ ] Re-request the same reviewer → tag flips to `Re-review Requested`.
 - [ ] Submit an `Approve` review → tag reflects aggregate state (`Approved` if no other reviewer has outstanding changes requested).
 - [ ] Edit the PR title → thread name updates.
-- [ ] Merge the PR → tag flips to `Merged`, thread stays active.
+- [ ] Merge the PR → tag flips to `Merged`, thread name gets `🟣` prefix.
 
 > **Note:** In multi-reviewer scenarios the tag reflects the aggregate review
 > state, not just the latest individual review. For example, if reviewer A
@@ -198,6 +198,10 @@ In one test repo, after wiring the caller workflow:
 - Discord forum tag names are matched **case-sensitively** — they must be exact.
 - PRs from forks are skipped (no access to secrets). Bot reviews are ignored, but PRs
   opened by bots (e.g. Dependabot) still get threads.
+- When a PR is merged or closed, the thread name is prefixed with `🟣` (merged) or
+  `🔴` (closed without merge) so terminal PRs are easy to spot in the channel list.
+  The prefix is removed if the PR is reopened. Editing a merged/closed PR's title
+  preserves the prefix.
 - Pushed commits do **not** post in the thread; only review/state events do.
 - Each sync event sets **exactly one** lifecycle forum tag on the thread. Any other
   forum tags manually added to the thread will be removed on the next update.
