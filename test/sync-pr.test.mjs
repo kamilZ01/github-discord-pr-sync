@@ -446,6 +446,72 @@ test("name-only update (tag already correct): patches name without status messag
   assert.doesNotMatch(r.stdout, /🟣 Merged by/);
 });
 
+// ---------- Bug fixes ----------
+
+test("ready_for_review with prior changes_requested review: message says 'ready for review', not 'changes requested'", () => {
+  const reviews = [
+    { user: { login: "bob", type: "User" }, state: "CHANGES_REQUESTED", submitted_at: "2026-04-12T10:00:00Z" },
+  ];
+  const r = runFixture("ready_for_review.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "1", // was Draft
+    DRY_RUN_REVIEWS_JSON: JSON.stringify(reviews),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Tag updates to Changes Requested (correct — reflects actual review state)
+  assert.match(r.stdout, /"applied_tags":\["3"\]/);
+  // Message reports the action, not the recomputed state
+  assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
+  assert.doesNotMatch(r.stdout, /🛠️ Changes requested/);
+});
+
+test("ready_for_review with no prior reviews: message says 'ready for review', tag Open", () => {
+  const r = runFixture("ready_for_review.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "1", // was Draft
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["2"\]/); // Open
+  assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
+});
+
+test("ready_for_review with tag already matching recomputed state: still posts status line", () => {
+  // Edge case: tag is already "Changes Requested" (e.g. Discord/GitHub out of sync),
+  // so tagChanged is false — but the undraft action should still produce a message.
+  const reviews = [
+    { user: { login: "bob", type: "User" }, state: "CHANGES_REQUESTED", submitted_at: "2026-04-12T10:00:00Z" },
+  ];
+  const r = runFixture("ready_for_review.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "3", // already Changes Requested
+    DRY_RUN_REVIEWS_JSON: JSON.stringify(reviews),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // No tag PATCH needed
+  assert.doesNotMatch(r.stdout, /"applied_tags":/);
+  // Status line still posted
+  assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
+});
+
+test("stale payload labels: fresh refetch finds thread label, skips creation", () => {
+  // Simulate: payload has no labels (stale), but API refetch finds the thread label
+  const freshPr = { labels: [{ name: "discord-thread:9876543210" }] };
+  const r = runFixture("opened.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: JSON.stringify(freshPr),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Should NOT create a new thread
+  assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  // Should update the existing thread found via refetch
+  assert.match(r.stdout, /PATCH https:\/\/discord\.com\/api\/v10\/channels\/9876543210/);
+});
+
+test("stale payload labels: fresh refetch finds no label, creates thread normally", () => {
+  // No DRY_RUN_FRESH_PR_JSON set — default stub returns { labels: [] }
+  const r = runFixture("opened.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  // Thread creation proceeds as before
+  assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID with tag Open/);
+});
+
 test("merged PR with long title: prefix + title truncated to 100 chars", () => {
   const base = JSON.parse(readFileSync(join(FIXTURES, "closed_merged.json"), "utf8"));
   base.pull_request.title = "A".repeat(95);

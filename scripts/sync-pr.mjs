@@ -55,10 +55,27 @@ async function http(url, init = {}, { retried = false } = {}) {
     /\/pulls\/\d+\/reviews/.test(url)
   ) {
     // Stub the PR-reviews GET in dry-run so tests can exercise branches that
-    // fetch reviews (e.g. review_requested) without network access. Returns an
-    // empty array — callers only use it to count prior reviews.
+    // fetch reviews (e.g. review_requested) without network access. Returns
+    // DRY_RUN_REVIEWS_JSON if set, otherwise an empty array.
     console.log(`[dry-run] GET ${url}`);
-    return { ok: true, status: 200, json: async () => [], text: async () => "[]" };
+    const reviews = process.env.DRY_RUN_REVIEWS_JSON
+      ? JSON.parse(process.env.DRY_RUN_REVIEWS_JSON)
+      : [];
+    return { ok: true, status: 200, json: async () => reviews, text: async () => JSON.stringify(reviews) };
+  }
+  if (
+    DRY_RUN &&
+    (!init.method || init.method === "GET") &&
+    url.startsWith("https://api.github.com") &&
+    /\/pulls\/\d+$/.test(url)
+  ) {
+    // Stub the single-PR GET used by the fresh-label refetch before thread
+    // creation. Returns DRY_RUN_FRESH_PR_JSON if set, otherwise { labels: [] }.
+    console.log(`[dry-run] GET ${url}`);
+    const pr = process.env.DRY_RUN_FRESH_PR_JSON
+      ? JSON.parse(process.env.DRY_RUN_FRESH_PR_JSON)
+      : { labels: [] };
+    return { ok: true, status: 200, json: async () => pr, text: async () => JSON.stringify(pr) };
   }
   const res = await fetch(url, init);
   if (res.status === 429 && !retried) {
@@ -370,6 +387,13 @@ function buildStatusMessage({ desired, event, eventName, userMap, tagChanged }) 
     return `@${login}`;
   };
 
+  // ready_for_review: the actor just un-drafted the PR. Report that action,
+  // not the recomputed tag state (which may replay an old review verdict).
+  if (eventName === "pull_request" && event.action === "ready_for_review") {
+    const actor = event.sender?.login || "someone";
+    return { content: `🟢 Marked as ready for review by @${actor}`, mentionUserIds: [] };
+  }
+
   if (eventName === "pull_request" && event.action === "review_requested") {
     // GitHub sends `requested_reviewer` for user requests and `requested_team`
     // for team requests. Teams can't be pinged via user snowflakes, so they
@@ -471,6 +495,17 @@ async function main() {
   }
 
   if (!threadId) {
+    // Event payload labels may be stale (race with concurrent workflow runs).
+    // Re-fetch from API to avoid creating duplicate threads.
+    const freshRes = await gh(`/repos/${owner}/${repo}/pulls/${pr.number}`);
+    const freshPrData = await freshRes.json();
+    threadId = findThreadIdFromLabels(freshPrData);
+    if (threadId) {
+      assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
+    }
+  }
+
+  if (!threadId) {
     await ensureLabel(
       owner,
       repo,
@@ -515,11 +550,14 @@ async function main() {
     await updateThread(threadId, { name: newName });
   }
 
-  // review_requested must post a mention even when the tag stays the same
-  // (e.g. first review request on a fresh PR — state remains "Open").
+  // review_requested and ready_for_review must post a status line even when the
+  // tag stays the same (e.g. first review request on a fresh PR — state remains
+  // "Open"; or undrafting when the tag was already correct).
   const isReviewRequested =
     eventName === "pull_request" && event.action === "review_requested";
-  const needsStatusLine = tagChanged || isReviewRequested;
+  const isReadyForReview =
+    eventName === "pull_request" && event.action === "ready_for_review";
+  const needsStatusLine = tagChanged || isReviewRequested || isReadyForReview;
 
   if (!needsStatusLine) {
     if (nameChanged) {
