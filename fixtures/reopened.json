@@ -1,0 +1,29 @@
+{
+  "action": "reopened",
+  "repository": {
+    "name": "test-repo",
+    "owner": { "login": "KZ-OWNER" },
+    "full_name": "KZ-OWNER/test-repo"
+  },
+  "sender": { "login": "kz" },
+  "pull_request": {
+    "number": 42,
+    "title": "Add retry logic to token refresh",
+    "html_url": "https://github.com/KZ-OWNER/test-repo/pull/42",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "body": "Adds exponential backoff to the token refresh path.",
+    "user": { "login": "kz", "type": "User" },
+    "head": {
+      "ref": "feature/token-retry",
+      "repo": { "full_name": "KZ-OWNER/test-repo" }
+    },
+    "base": { "ref": "main" },
+    "labels": [
+      { "name": "discord-thread:1234567890" }
+    ],
+    "requested_reviewers": [],
+    "requested_teams": []
+  }
+}

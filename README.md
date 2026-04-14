@@ -41,7 +41,7 @@ no checkout of this repo is needed in the consumer workflow.
    - View Channels
    - Send Messages in Threads
    - Create Public Threads
-   - Manage Threads (required to PATCH `applied_tags`)
+   - Manage Threads (required to PATCH `applied_tags` and archive/unarchive threads)
 3. For each repo you want to sync, create a **forum channel** (e.g. `#api-server-prs`).
 4. In each forum channel, create these 7 tags **with these exact names** (the script
    matches by name):

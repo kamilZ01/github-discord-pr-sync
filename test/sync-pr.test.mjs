@@ -8,8 +8,9 @@
 // resolveTagIds skips the Discord channel fetch. The Discord /channels/:id
 // GET used by getThread is not called under dry-run — tests can instead set
 // DRY_RUN_CURRENT_TAG_ID to simulate a thread that already has a given tag,
-// and DRY_RUN_CURRENT_THREAD_NAME to simulate the current thread name (defaults
-// to the computed new name when unset, so existing tests are unaffected).
+// DRY_RUN_CURRENT_THREAD_NAME to simulate the current thread name (defaults
+// to the computed new name when unset, so existing tests are unaffected), and
+// DRY_RUN_CURRENT_ARCHIVED to simulate an archived thread (defaults to false).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -432,7 +433,7 @@ test("title edit on open PR: thread name has no prefix", () => {
   assert.doesNotMatch(r.stdout, /🔴/);
 });
 
-test("name-only update (tag already correct): patches name without status message", () => {
+test("name-only update (tag already correct): patches name without status message, archives", () => {
   const r = runFixture("closed_merged.json", "pull_request", {
     DRY_RUN_CURRENT_TAG_ID: "6", // already Merged
     DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh", // legacy unprefixed
@@ -444,6 +445,8 @@ test("name-only update (tag already correct): patches name without status messag
   // No status message posted — only name updated
   assert.match(r.stdout, /Updated thread 1234567890 name/);
   assert.doesNotMatch(r.stdout, /🟣 Merged by/);
+  // Thread is archived (terminal state)
+  assert.match(r.stdout, /"archived":true/);
 });
 
 // ---------- Bug fixes ----------
@@ -510,6 +513,110 @@ test("stale payload labels: fresh refetch finds no label, creates thread normall
   // Thread creation proceeds as before
   assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
   assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID with tag Open/);
+});
+
+// ---------- Thread archiving ----------
+
+test("closed+merged: thread is archived after status message", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Status message POST must appear before the archive PATCH
+  const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
+  const archiveIdx = r.stdout.indexOf('"archived":true');
+  assert.ok(postIdx > -1, "status message should be posted");
+  assert.ok(archiveIdx > -1, "thread should be archived");
+  assert.ok(archiveIdx > postIdx, "archive PATCH must come after status message POST");
+});
+
+test("merged + name-only (tag already correct): archives even without status message", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "6", // already Merged
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh", // legacy unprefixed
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Name-only PATCH (no applied_tags)
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh"/);
+  assert.doesNotMatch(r.stdout, /applied_tags/);
+  // No status message posted
+  assert.doesNotMatch(r.stdout, /🟣 Merged by/);
+  // But thread IS archived
+  assert.match(r.stdout, /"archived":true/);
+});
+
+test("closed without merge: thread is archived", () => {
+  const r = runFixture("closed_not_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh",
+    DRY_RUN_CURRENT_TAG_ID: "2", // was Open
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"archived":true/);
+  // Archive comes after status message
+  const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
+  const archiveIdx = r.stdout.indexOf('"archived":true');
+  assert.ok(archiveIdx > postIdx, "archive must come after status message");
+});
+
+test("title edit on merged PR: archives in the same PATCH as rename", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  // Single PATCH should contain both name and archived
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
+  assert.match(r.stdout, /"archived":true/);
+});
+
+test("reopened PR (with tag change): unarchives thread and posts status", () => {
+  const r = runFixture("reopened.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "7", // was Closed
+    DRY_RUN_CURRENT_THREAD_NAME: "🔴 #42 Add retry logic to token refresh",
+    DRY_RUN_CURRENT_ARCHIVED: "true",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Tag updated to Open
+  assert.match(r.stdout, /"applied_tags":\["2"\]/);
+  // Name updated (prefix removed)
+  assert.match(r.stdout, /"name":"#42 Add retry logic to token refresh"/);
+  // Thread is unarchived before status message, not re-archived
+  const unarchiveIdx = r.stdout.indexOf('"archived":false');
+  const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
+  assert.ok(unarchiveIdx > -1, "should unarchive");
+  assert.ok(postIdx > -1, "should post status message");
+  assert.ok(unarchiveIdx < postIdx, "unarchive must come before status message");
+  assert.match(r.stdout, /🟢 Open for review/);
+  assert.doesNotMatch(r.stdout, /"archived":true/);
+});
+
+test("reopened PR (no tag/name delta, thread still archived): unarchives without posting", () => {
+  const r = runFixture("reopened.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "2", // already Open
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh", // already correct
+    DRY_RUN_CURRENT_ARCHIVED: "true",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // No tag or name PATCH needed
+  assert.doesNotMatch(r.stdout, /applied_tags/);
+  // No status message posted (needsStatusLine is false)
+  assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234567890\/messages/);
+  // But thread IS unarchived
+  assert.match(r.stdout, /"archived":false/);
+  // And NOT re-archived
+  assert.doesNotMatch(r.stdout, /"archived":true/);
+});
+
+test("merged PR already archived + tag change: unarchives before post, re-archives after", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic to token refresh",
+    DRY_RUN_CURRENT_ARCHIVED: "true",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Unarchive comes before status message, archive comes after
+  const unarchiveIdx = r.stdout.indexOf('"archived":false');
+  const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
+  const archiveIdx = r.stdout.lastIndexOf('"archived":true');
+  assert.ok(unarchiveIdx > -1, "should unarchive first");
+  assert.ok(unarchiveIdx < postIdx, "unarchive must come before status message");
+  assert.ok(archiveIdx > postIdx, "archive must come after status message");
 });
 
 test("merged PR with long title: prefix + title truncated to 100 chars", () => {

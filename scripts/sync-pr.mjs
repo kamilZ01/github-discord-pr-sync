@@ -39,6 +39,7 @@ const STATUS_LINES = {
 
 const THREAD_LABEL_PREFIX = "discord-thread:";
 const DISCORD_SNOWFLAKE_RE = /^\d{5,25}$/;
+const isTerminalState = (s) => s === "Merged" || s === "Closed";
 
 // ---------- HTTP helpers ----------
 
@@ -477,7 +478,9 @@ async function main() {
       return;
     }
     assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
-    await updateThread(threadId, { name: threadName(pr) });
+    const fields = { name: threadName(pr) };
+    if (pr.state === "closed") fields.archived = true;
+    await updateThread(threadId, fields);
     console.log(`Renamed thread ${threadId}`);
     return;
   }
@@ -517,25 +520,32 @@ async function main() {
     const labelName = `${THREAD_LABEL_PREFIX}${threadId}`;
     await ensureLabel(owner, repo, labelName, "ededed", "Discord thread mapping");
     await addLabel(owner, repo, pr.number, labelName);
+    if (isTerminalState(desired)) {
+      await updateThread(threadId, { archived: true });
+    }
     console.log(`Created thread ${threadId} with tag ${desired}`);
     return;
   }
 
-  // Existing thread: compare current tags and name, update if different.
+  // Existing thread: compare current tags, name, and archive state.
   const newName = threadName(pr);
   let currentTags = [];
   let currentName = "";
+  let currentlyArchived = false;
   if (DRY_RUN) {
-    // Test hooks: simulate a thread that already has a given tag/name without
-    // network access. DRY_RUN_CURRENT_THREAD_NAME uses ?? (not ||) so empty
-    // string is a valid stub; when unset, defaults to newName (no name change).
+    // Test hooks: simulate a thread that already has a given tag/name/archived
+    // state without network access. DRY_RUN_CURRENT_THREAD_NAME uses ?? (not ||)
+    // so empty string is a valid stub; when unset, defaults to newName (no name
+    // change). DRY_RUN_CURRENT_ARCHIVED defaults to false when unset.
     const stub = process.env.DRY_RUN_CURRENT_TAG_ID;
     if (stub) currentTags = [stub];
     currentName = process.env.DRY_RUN_CURRENT_THREAD_NAME ?? newName;
+    currentlyArchived = process.env.DRY_RUN_CURRENT_ARCHIVED === "true";
   } else {
     const thread = await getThread(threadId);
     currentTags = thread.applied_tags || [];
     currentName = thread.name || "";
+    currentlyArchived = thread.thread_metadata?.archived ?? false;
   }
 
   const tagChanged = !(currentTags.length === 1 && currentTags[0] === desiredTagId);
@@ -559,7 +569,17 @@ async function main() {
     eventName === "pull_request" && event.action === "ready_for_review";
   const needsStatusLine = tagChanged || isReviewRequested || isReadyForReview;
 
+  // Ensure thread is unarchived before posting messages. This covers:
+  // - terminal state arriving while thread is already archived (partial failure retry)
+  // - non-terminal state (reopen) on an archived thread
+  if (currentlyArchived && (needsStatusLine || !isTerminalState(desired))) {
+    await updateThread(threadId, { archived: false });
+  }
+
   if (!needsStatusLine) {
+    if (isTerminalState(desired)) {
+      await updateThread(threadId, { archived: true });
+    }
     if (nameChanged) {
       console.log(`Updated thread ${threadId} name`);
     } else {
@@ -576,6 +596,10 @@ async function main() {
     tagChanged,
   });
   await postThreadMessage(threadId, content, mentionUserIds);
+
+  if (isTerminalState(desired)) {
+    await updateThread(threadId, { archived: true });
+  }
   console.log(`Updated thread ${threadId} → ${desired}`);
 }
 
