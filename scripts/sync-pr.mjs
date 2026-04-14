@@ -478,6 +478,16 @@ async function main() {
       return;
     }
     assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
+    let isArchived = false;
+    if (DRY_RUN) {
+      isArchived = process.env.DRY_RUN_CURRENT_ARCHIVED === "true";
+    } else {
+      const thread = await getThread(threadId);
+      isArchived = thread.thread_metadata?.archived ?? false;
+    }
+    if (isArchived) {
+      await updateThread(threadId, { archived: false });
+    }
     const fields = { name: threadName(pr) };
     if (pr.state === "closed") fields.archived = true;
     await updateThread(threadId, fields);
@@ -551,15 +561,6 @@ async function main() {
   const tagChanged = !(currentTags.length === 1 && currentTags[0] === desiredTagId);
   const nameChanged = currentName !== newName;
 
-  // Combined PATCH for tag and/or name.
-  if (tagChanged && nameChanged) {
-    await updateThread(threadId, { applied_tags: [desiredTagId], name: newName });
-  } else if (tagChanged) {
-    await updateThread(threadId, { applied_tags: [desiredTagId] });
-  } else if (nameChanged) {
-    await updateThread(threadId, { name: newName });
-  }
-
   // review_requested and ready_for_review must post a status line even when the
   // tag stays the same (e.g. first review request on a fresh PR — state remains
   // "Open"; or undrafting when the tag was already correct).
@@ -569,11 +570,21 @@ async function main() {
     eventName === "pull_request" && event.action === "ready_for_review";
   const needsStatusLine = tagChanged || isReviewRequested || isReadyForReview;
 
-  // Ensure thread is unarchived before posting messages. This covers:
-  // - terminal state arriving while thread is already archived (partial failure retry)
-  // - non-terminal state (reopen) on an archived thread
-  if (currentlyArchived && (needsStatusLine || !isTerminalState(desired))) {
+  // Ensure thread is unarchived before any mutating PATCH. Discord rejects
+  // PATCH on archived threads with error 50083 ("Thread is archived").
+  // This covers: reopen on an archived thread, terminal state retry,
+  // and name-only changes on archived terminal threads.
+  if (currentlyArchived && (tagChanged || nameChanged || needsStatusLine || !isTerminalState(desired))) {
     await updateThread(threadId, { archived: false });
+  }
+
+  // Combined PATCH for tag and/or name.
+  if (tagChanged && nameChanged) {
+    await updateThread(threadId, { applied_tags: [desiredTagId], name: newName });
+  } else if (tagChanged) {
+    await updateThread(threadId, { applied_tags: [desiredTagId] });
+  } else if (nameChanged) {
+    await updateThread(threadId, { name: newName });
   }
 
   if (!needsStatusLine) {

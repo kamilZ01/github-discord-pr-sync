@@ -566,6 +566,21 @@ test("title edit on merged PR: archives in the same PATCH as rename", () => {
   assert.match(r.stdout, /"archived":true/);
 });
 
+test("title edit on merged PR (thread already archived): unarchives before rename", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_ARCHIVED: "true",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Unarchive comes before the rename+archive PATCH
+  const unarchiveIdx = r.stdout.indexOf('"archived":false');
+  const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
+  assert.ok(unarchiveIdx > -1, "should unarchive first");
+  assert.ok(renameIdx > -1, "should rename");
+  assert.ok(unarchiveIdx < renameIdx, "unarchive must come before rename PATCH");
+  // Re-archived after rename (closed PR)
+  assert.match(r.stdout, /"archived":true/);
+});
+
 test("reopened PR (with tag change): unarchives thread and posts status", () => {
   const r = runFixture("reopened.json", "pull_request", {
     DRY_RUN_CURRENT_TAG_ID: "7", // was Closed
@@ -577,12 +592,14 @@ test("reopened PR (with tag change): unarchives thread and posts status", () => 
   assert.match(r.stdout, /"applied_tags":\["2"\]/);
   // Name updated (prefix removed)
   assert.match(r.stdout, /"name":"#42 Add retry logic to token refresh"/);
-  // Thread is unarchived before status message, not re-archived
+  // Thread is unarchived before tag/name PATCH, not re-archived
   const unarchiveIdx = r.stdout.indexOf('"archived":false');
+  const tagPatchIdx = r.stdout.indexOf('"applied_tags":');
   const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
   assert.ok(unarchiveIdx > -1, "should unarchive");
+  assert.ok(tagPatchIdx > -1, "should update tag");
   assert.ok(postIdx > -1, "should post status message");
-  assert.ok(unarchiveIdx < postIdx, "unarchive must come before status message");
+  assert.ok(unarchiveIdx < tagPatchIdx, "unarchive must come before tag/name PATCH");
   assert.match(r.stdout, /🟢 Open for review/);
   assert.doesNotMatch(r.stdout, /"archived":true/);
 });
@@ -610,11 +627,13 @@ test("merged PR already archived + tag change: unarchives before post, re-archiv
     DRY_RUN_CURRENT_ARCHIVED: "true",
   });
   assert.equal(r.code, 0, r.stderr);
-  // Unarchive comes before status message, archive comes after
+  // Unarchive comes before tag/name PATCH and status message, archive comes after
   const unarchiveIdx = r.stdout.indexOf('"archived":false');
+  const tagPatchIdx = r.stdout.indexOf('"applied_tags":');
   const postIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234567890/messages");
   const archiveIdx = r.stdout.lastIndexOf('"archived":true');
   assert.ok(unarchiveIdx > -1, "should unarchive first");
+  assert.ok(unarchiveIdx < tagPatchIdx, "unarchive must come before tag/name PATCH");
   assert.ok(unarchiveIdx < postIdx, "unarchive must come before status message");
   assert.ok(archiveIdx > postIdx, "archive must come after status message");
 });
