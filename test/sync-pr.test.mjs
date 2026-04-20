@@ -493,6 +493,35 @@ test("ready_for_review with tag already matching recomputed state: still posts s
   assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
 });
 
+test("fetchReviews paginates: follows Link: rel=next to fetch every page", () => {
+  // Page 1 (full 100) is all APPROVED. Page 2 has a later CHANGES_REQUESTED
+  // review. If pagination works, state resolves to Changes Requested. If the
+  // old single-page code were still in place, it would either throw on the
+  // 100-item limit or miss page 2 entirely — either way, not Changes Requested.
+  const page1 = Array.from({ length: 100 }, (_, i) => ({
+    user: { login: `u${i}`, type: "User" },
+    state: "APPROVED",
+    submitted_at: "2026-04-01T10:00:00Z",
+  }));
+  const page2 = [
+    {
+      user: { login: "blocker", type: "User" },
+      state: "CHANGES_REQUESTED",
+      submitted_at: "2026-04-15T10:00:00Z",
+    },
+  ];
+  const r = runFixture("ready_for_review.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "1", // was Draft
+    DRY_RUN_REVIEWS_PAGES_JSON: JSON.stringify([page1, page2]),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  // Both pages were fetched.
+  assert.match(r.stdout, /\[dry-run\] GET https:\/\/api\.github\.com\/repos\/[^ ]+\/reviews\?per_page=100\n/);
+  assert.match(r.stdout, /\[dry-run\] GET https:\/\/api\.github\.com\/repos\/[^ ]+\/reviews\?per_page=100&page=2\n/);
+  // Recomputed state reflects page 2's CHANGES_REQUESTED review.
+  assert.match(r.stdout, /"applied_tags":\["3"\]/);
+});
+
 test("stale payload labels: fresh refetch finds thread label, skips creation", () => {
   // Simulate: payload has no labels (stale), but API refetch finds the thread label
   const freshPr = { labels: [{ name: "discord-thread:9876543210" }] };

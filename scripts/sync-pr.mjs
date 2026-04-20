@@ -56,9 +56,32 @@ async function http(url, init = {}, { retried = false } = {}) {
     /\/pulls\/\d+\/reviews/.test(url)
   ) {
     // Stub the PR-reviews GET in dry-run so tests can exercise branches that
-    // fetch reviews (e.g. review_requested) without network access. Returns
-    // DRY_RUN_REVIEWS_JSON if set, otherwise an empty array.
+    // fetch reviews (e.g. review_requested) without network access.
+    //   DRY_RUN_REVIEWS_PAGES_JSON — JSON array of arrays, one per page, used
+    //     to exercise pagination (adds a Link: rel="next" header when more
+    //     pages remain; ?page=N in the URL selects the page).
+    //   DRY_RUN_REVIEWS_JSON — single-page shorthand (legacy).
+    //   default — empty array.
     console.log(`[dry-run] GET ${url}`);
+    if (process.env.DRY_RUN_REVIEWS_PAGES_JSON) {
+      const pages = JSON.parse(process.env.DRY_RUN_REVIEWS_PAGES_JSON);
+      const pageNum = Number(new URL(url).searchParams.get("page") || "1");
+      const body = pages[pageNum - 1] || [];
+      const headers = new Map();
+      if (pageNum < pages.length) {
+        const nextUrl = /[?&]page=\d+/.test(url)
+          ? url.replace(/([?&])page=\d+/, `$1page=${pageNum + 1}`)
+          : `${url}&page=${pageNum + 1}`;
+        headers.set("link", `<${nextUrl}>; rel="next"`);
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (k) => headers.get(k.toLowerCase()) ?? null },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      };
+    }
     const reviews = process.env.DRY_RUN_REVIEWS_JSON
       ? JSON.parse(process.env.DRY_RUN_REVIEWS_JSON)
       : [];
@@ -187,15 +210,37 @@ function isBot(user) {
   return user && user.type === "Bot";
 }
 
-async function fetchReviews(owner, repo, number) {
-  const res = await gh(`/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`);
-  const reviews = await res.json();
-  if (reviews.length === 100) {
-    throw new Error(
-      `fetchReviews: hit per_page=100 limit for PR #${number}; cannot reliably compute state.`
-    );
+function parseNextLink(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  if (!match) return null;
+  try {
+    const u = new URL(match[1]);
+    if (u.host !== "api.github.com") return null;
+    return match[1];
+  } catch {
+    return null;
   }
-  return reviews;
+}
+
+async function fetchReviews(owner, repo, number) {
+  const all = [];
+  let url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`;
+  while (url) {
+    // Headers mirror gh() — keep in sync if gh() changes.
+    const res = await http(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+    });
+    const page = await res.json();
+    all.push(...page);
+    url = parseNextLink(res.headers?.get?.("link"));
+  }
+  return all;
 }
 
 async function recomputeStateFromScratch(pr, owner, repo) {
