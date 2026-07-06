@@ -5,7 +5,7 @@ reflect the PR's lifecycle (`Draft`, `Open`, `Changes Requested`, `Re-review Req
 `Approved`, `Merged`, `Closed`).
 
 - **No infrastructure.** Runs as a GitHub Actions composite action.
-- **No dependencies.** A single ~400-line Node 20 script using built-in `fetch`.
+- **No dependencies.** A single ~400-line Node 24 script using built-in `fetch`.
 - **No external storage.** PR ↔ thread mapping lives in a `discord-thread:<id>` PR label.
 - **Cross-org.** This repo is public so any repo (yours or a colleague's) can use the
   action.
