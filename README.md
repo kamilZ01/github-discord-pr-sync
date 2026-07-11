@@ -98,7 +98,7 @@ jobs:
       group: discord-pr-sync-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
-      - uses: kamilZ01/github-discord-pr-sync@v1
+      - uses: kamilZ01/github-discord-pr-sync@f04cfe2b9922c8bcfa0ed21f0175358e3514727c # v1.3.3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           discord-bot-token: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -107,9 +107,15 @@ jobs:
           github-to-discord-user-map: ${{ vars.DISCORD_USER_MAP_JSON }}
 ```
 
-> **Pinning:** For supply-chain hardening, pin `@v1` to a full commit SHA
-> (e.g. `@abc123def...`). A mutable tag like `@v1` tracks the latest patch
-> in that major version; a SHA is immutable.
+> **Pinning:** Pin to a full commit SHA — it's immutable and the
+> supply-chain-hardening baseline. Every release gets an immutable `vX.Y.Z`
+> tag; reference its commit SHA with the version in a trailing comment, e.g.
+> `@f04cfe2b9922c8bcfa0ed21f0175358e3514727c # v1.3.3`. Dependabot
+> (github-actions ecosystem) keeps the SHA up to date.
+>
+> Note: the floating `v1` major tag is **not** moved on new releases, so
+> `@v1` stays frozen at an old commit and will not receive updates. Always
+> pin a SHA (or an exact `vX.Y.Z` tag), not `@v1`.
 
 ### 3. First run caches tag IDs
 
