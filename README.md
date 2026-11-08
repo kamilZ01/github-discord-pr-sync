@@ -18,7 +18,7 @@ reflect the PR's lifecycle (`Draft`, `Open`, `Changes Requested`, `Re-review Req
 GitHub PR event ──▶ caller workflow in consumer repo
                        │
                        ▼
-               uses: kamilZ01/github-discord-pr-sync@v1
+               uses: kamilZ01/github-discord-pr-sync@<release SHA>
                (composite action — this repo)
                        │
                        ▼
@@ -116,15 +116,13 @@ jobs:
           github-to-discord-user-map: ${{ vars.DISCORD_USER_MAP_JSON }}
 ```
 
-> **Pinning:** Pin to a full commit SHA — it's immutable and the
-> supply-chain-hardening baseline. Every release gets an immutable `vX.Y.Z`
-> tag; reference its commit SHA with the version in a trailing comment, e.g.
-> `@5374d19221802221eb269a48a173c4986187a36c # v1.4.0`. Dependabot
-> (github-actions ecosystem) keeps the SHA up to date.
+> **Pinning:** Pin a release's full commit SHA with its version in a trailing comment, as
+> the workflow above does. A SHA is immutable, which makes it the supply-chain-hardening
+> baseline. Every release gets an immutable `vX.Y.Z` tag, and Dependabot (github-actions
+> ecosystem) keeps the SHA and comment current.
 >
-> Note: the floating `v1` major tag is **not** moved on new releases, so
-> `@v1` stays frozen at an old commit and will not receive updates. Always
-> pin a SHA (or an exact `vX.Y.Z` tag), not `@v1`.
+> The floating `v1` tag stays at v1.3.3 and never moves, so `@v1` gets no later releases.
+> Pin a SHA or an exact `vX.Y.Z` tag to stay current.
 
 ### 3. First run caches tag IDs
 
