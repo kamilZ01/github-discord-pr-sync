@@ -154,7 +154,8 @@ To get a Discord user ID, enable Developer Mode in Discord → right-click a use
 User ID**. Once configured, the action posts real pings:
 
 - `pull_request.opened` → pings the PR author in the initial post, so the notification itself is a direct jump-link to the new forum thread
-- `pull_request.review_requested` → pings the requested reviewer
+- `pull_request.review_requested` → pings the requested reviewer, including reviewers that
+  CODEOWNERS requests as the PR opens (even when that event's run creates the thread)
 - `pull_request_review.submitted` (approve / changes requested) → pings the PR author
 
 Only the explicit user IDs in this map are allowed to ping; `@everyone`, `@here`, and
@@ -241,6 +242,9 @@ In one test repo, after wiring the caller workflow:
   The prefix is removed if the PR is reopened. Editing a merged/closed PR's title
   preserves the prefix.
 - Pushed commits do **not** post in the thread; only review/state events do.
+- When a `review_requested` or `ready_for_review` event is the first the action sees for
+  a PR, it creates the thread and then posts that event's status line, the same as
+  for an existing thread.
 - Each sync event sets **exactly one** lifecycle forum tag on the thread. Any other
   forum tags manually added to the thread will be removed on the next update.
 
