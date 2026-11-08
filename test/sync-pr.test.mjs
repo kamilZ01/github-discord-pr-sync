@@ -427,15 +427,16 @@ test("closed without merge: updates thread to Closed tag and 🔴 prefixed name"
   assert.match(r.stdout, /Updated thread 1234567890 → Closed/);
 });
 
-// Title edits on a closed PR go through the full sync (see below), so these
+// Title edits on a closed PR take the full sync, not a bare rename (main() in
+// scripts/sync-pr.mjs skips the edit branch when the PR is closed), so these
 // stub the thread as already Merged under its old name.
-const MERGED_THREAD_OLD_NAME = {
+const MERGED_THREAD_BEFORE_RENAME = {
   DRY_RUN_CURRENT_TAG_ID: "6",
   DRY_RUN_CURRENT_THREAD_NAME: "🟣 #42 Add retry logic",
 };
 
 test("title edit on merged PR: thread name includes 🟣 prefix", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_BEFORE_RENAME);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /PATCH https:\/\/discord\.com\/api\/v10\/channels\/1234567890/);
   assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
@@ -607,7 +608,7 @@ test("closed without merge: thread is archived", () => {
 });
 
 test("title edit on merged PR: renames, then archives", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_BEFORE_RENAME);
   assert.equal(r.code, 0, r.stderr);
   const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
   assert.ok(renameIdx > -1, "should rename");
@@ -616,11 +617,11 @@ test("title edit on merged PR: renames, then archives", () => {
 
 test("title edit on merged PR (thread already archived): unarchives before rename", () => {
   const r = runFixture("edited_title_merged.json", "pull_request", {
-    ...MERGED_THREAD_OLD_NAME,
+    ...MERGED_THREAD_BEFORE_RENAME,
     DRY_RUN_CURRENT_ARCHIVED: "true",
   });
   assert.equal(r.code, 0, r.stderr);
-  // Unarchive comes before the rename+archive PATCH
+  // Unarchive comes before the rename PATCH
   const unarchiveIdx = r.stdout.indexOf('"archived":false');
   const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
   assert.ok(unarchiveIdx > -1, "should unarchive first");
@@ -765,7 +766,7 @@ test("reopened PR whose label was released: starts a new thread and keeps its la
 });
 
 test("title edit on a merged PR that still has a label: renames, then deletes the label", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_BEFORE_RENAME);
   assert.equal(r.code, 0, r.stderr);
   const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
   assert.ok(renameIdx > -1, r.stdout);
@@ -793,6 +794,31 @@ test("body-only edit on a merged PR that still has a label: syncs to Merged, arc
   assert.match(r.stdout, /"applied_tags":\["6"\]/);
   assert.match(r.stdout, /"archived":true/);
   assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+// A non-close event that syncs a closed PR to its final state reports who
+// merged it, not who sent the event.
+test("edit on a merged PR with a stale tag: status line credits the merger, not the editor", () => {
+  const r = runMutatedFixture("edited_body_only.json", "pull_request", (e) => {
+    e.pull_request.state = "closed";
+    e.pull_request.merged = true;
+    e.pull_request.merged_by = { login: "merger" };
+    e.sender = { login: "editor" };
+  }, { DRY_RUN_CURRENT_TAG_ID: "5" });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"content":"🟣 Merged by @merger"/);
+  assert.doesNotMatch(r.stdout, /@editor/);
+});
+
+test("review on a PR closed without merge since: status line names no actor", () => {
+  const r = runFixture("review_changes_requested.json", "pull_request_review", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("review_changes_requested.json", (pr) => {
+      pr.state = "closed";
+      pr.merged = false;
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"content":"🔴 Closed without merging"/);
 });
 
 test("open PR events never delete the thread label", () => {
@@ -877,6 +903,20 @@ test("review on a merged PR that still has a label: keeps Merged tag, archives, 
   assert.equal(r.code, 0, r.stderr);
   assert.doesNotMatch(r.stdout, /"applied_tags":\["3"\]/);
   assert.doesNotMatch(r.stdout, /"archived":false/);
+  // Discord rejects edits to an archived thread unless they unarchive it,
+  // so an already archived thread must get no archive PATCH either.
+  assert.doesNotMatch(r.stdout, /"archived":true/);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("body-only edit on a merged PR whose thread is already archived: no Discord writes, deletes the label", () => {
+  // e.g. a retry after the close run's label delete failed
+  const r = runMutatedFixture("edited_body_only.json", "pull_request", (e) => {
+    e.pull_request.state = "closed";
+    e.pull_request.merged = true;
+  }, { DRY_RUN_CURRENT_TAG_ID: "6", DRY_RUN_CURRENT_THREAD_NAME: "🟣 #42 Add retry logic to token refresh", DRY_RUN_CURRENT_ARCHIVED: "true" });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /PATCH https:\/\/discord\.com/);
   assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
 });
 
@@ -919,7 +959,7 @@ test("label already deleted (404): still succeeds", () => {
     DRY_RUN_LABEL_DELETE_STATUS: "404",
   });
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /Released label discord-thread:1234567890/);
+  assert.match(r.stdout, /Label discord-thread:1234567890 already deleted/);
 });
 
 test("label delete fails for another reason: run fails", () => {

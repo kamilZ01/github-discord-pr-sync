@@ -331,21 +331,20 @@ async function ensureLabel(owner, repo, name, color, description) {
 }
 
 function threadMapping({ owner, repo }) {
+  const threadLabelNames = (pr) =>
+    (pr.labels || []).map((lbl) => lbl.name).filter((name) => name?.startsWith(THREAD_LABEL_PREFIX));
+
   return {
     // Thread id recorded on this PR, or null. Pass a freshly fetched PR:
     // event payload labels may be stale. Throws on a malformed label.
     find(pr) {
-      let found = null;
-      for (const lbl of pr.labels || []) {
-        if (!lbl.name || !lbl.name.startsWith(THREAD_LABEL_PREFIX)) continue;
-        if (found) {
-          // Invariant: never overwrite `found` — always use the first match.
-          console.warn(`Multiple ${THREAD_LABEL_PREFIX} labels found; using first: ${found}`);
-          break;
-        }
-        found = lbl.name.slice(THREAD_LABEL_PREFIX.length);
+      const [first, ...rest] = threadLabelNames(pr);
+      if (!first) return null;
+      const found = first.slice(THREAD_LABEL_PREFIX.length);
+      if (rest.length > 0) {
+        console.warn(`Multiple ${THREAD_LABEL_PREFIX} labels found; using first: ${found}`);
       }
-      if (found && !DISCORD_SNOWFLAKE_RE.test(found)) {
+      if (!DISCORD_SNOWFLAKE_RE.test(found)) {
         throw new Error(`Invalid Discord thread id in label "${THREAD_LABEL_PREFIX}${found}"`);
       }
       return found;
@@ -372,15 +371,14 @@ function threadMapping({ owner, repo }) {
     // `find` ignores, left by the old duplicate-thread race. Idempotent: an
     // already-deleted label is not an error.
     async release(pr) {
-      for (const lbl of pr.labels || []) {
-        const name = lbl.name;
-        if (!name || !name.startsWith(THREAD_LABEL_PREFIX)) continue;
+      for (const name of threadLabelNames(pr)) {
         try {
           await gh(`/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`, { method: "DELETE" });
+          console.log(`Released label ${name}`);
         } catch (err) {
           if (err.status !== 404) throw err;
+          console.log(`Label ${name} already deleted`);
         }
-        console.log(`Released label ${name}`);
       }
     },
   };
@@ -462,7 +460,7 @@ async function postThreadMessage(threadId, content, mentionUserIds = []) {
 // here. GitHub fires a separate pull_request.review_requested event for each
 // reviewer pre-assigned at PR creation, so those reviewers get pinged via the
 // review_requested branch — mentioning them again on "opened" would double-ping.
-function buildStatusMessage({ desired, event, eventName, userMap, tagChanged }) {
+function buildStatusMessage({ desired, pr, event, eventName, userMap, tagChanged }) {
   const mentionUserIds = [];
   const pushMention = (login) => {
     const id = userMap[login];
@@ -472,6 +470,16 @@ function buildStatusMessage({ desired, event, eventName, userMap, tagChanged }) 
     }
     return `@${login}`;
   };
+
+  // A closed PR synced by some later event (edit, review, a stale payload):
+  // the event's sender didn't close it. Credit the merger when GitHub says who
+  // it was; the PR object doesn't name who closed without merging.
+  const isCloseEvent = eventName === "pull_request" && event.action === "closed";
+  if (isTerminalState(desired) && !isCloseEvent) {
+    const merger = desired === "Merged" ? pr.merged_by?.login : null;
+    const content = merger ? `${STATUS_LINES[desired]} by @${merger}` : STATUS_LINES[desired];
+    return { content, mentionUserIds: [] };
+  }
 
   // ready_for_review: the actor just un-drafted the PR. Report that action,
   // not the recomputed tag state (which may replay an old review verdict).
@@ -615,9 +623,7 @@ async function renameThread(threadId, pr) {
   if (isArchived) {
     await updateThread(threadId, { archived: false });
   }
-  const fields = { name: threadName(pr) };
-  if (pr.state === "closed") fields.archived = true;
-  await updateThread(threadId, fields);
+  await updateThread(threadId, { name: threadName(pr) });
   console.log(`Renamed thread ${threadId}`);
 }
 
@@ -662,9 +668,15 @@ async function syncExistingThread({ threadId, desired, pr, event, eventName, tag
   // PATCH on archived threads with error 50083 ("Thread is archived").
   // This covers: reopen on an archived thread, terminal state retry,
   // and name-only changes on archived terminal threads.
-  if (currentlyArchived && (tagChanged || nameChanged || needsStatusLine || !isTerminalState(desired))) {
+  let archived = currentlyArchived;
+  if (archived && (tagChanged || nameChanged || needsStatusLine || !isTerminalState(desired))) {
     await updateThread(threadId, { archived: false });
+    archived = false;
   }
+  // Same rule: an already archived thread can't take another archive PATCH.
+  const archiveIfTerminal = async () => {
+    if (isTerminalState(desired) && !archived) await updateThread(threadId, { archived: true });
+  };
 
   // Combined PATCH for tag and/or name.
   if (tagChanged && nameChanged) {
@@ -676,9 +688,7 @@ async function syncExistingThread({ threadId, desired, pr, event, eventName, tag
   }
 
   if (!needsStatusLine) {
-    if (isTerminalState(desired)) {
-      await updateThread(threadId, { archived: true });
-    }
+    await archiveIfTerminal();
     if (nameChanged) {
       console.log(`Updated thread ${threadId} name`);
     } else {
@@ -689,16 +699,14 @@ async function syncExistingThread({ threadId, desired, pr, event, eventName, tag
 
   const { content, mentionUserIds } = buildStatusMessage({
     desired,
+    pr,
     event,
     eventName,
     userMap,
     tagChanged,
   });
   await postThreadMessage(threadId, content, mentionUserIds);
-
-  if (isTerminalState(desired)) {
-    await updateThread(threadId, { archived: true });
-  }
+  await archiveIfTerminal();
   console.log(`Updated thread ${threadId} → ${desired}`);
 }
 
