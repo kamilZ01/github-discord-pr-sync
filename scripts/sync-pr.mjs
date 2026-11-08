@@ -598,41 +598,22 @@ async function main() {
       console.log("No state change required.");
       return;
     }
-    if (!threadId) {
+    const name = threadName(current);
+    let target;
+    if (threadId) {
+      target = { threadId, thread: await readThread(threadId, name) };
+    } else {
       await mapping.prepare();
       const newId = await createForumThread(current, tagIds[desired], userMap);
       await mapping.save(current, newId);
       console.log(`Created thread ${newId} with tag ${desired}`);
-      // The new thread already has the desired tag and name, so this posts
-      // only the status line the event calls for. CODEOWNERS requests
-      // reviewers as the PR opens, so a review_requested run can create the
-      // thread, and the opened run that follows posts nothing: this is the
-      // reviewer's only ping. It runs after save, so a failed post is retried
-      // through the existing-thread path.
-      const created = { tags: [tagIds[desired]], name: threadName(current), archived: false };
-      await syncExistingThread({
-        threadId: newId,
-        thread: created,
-        desired,
-        pr: current,
-        event,
-        eventName,
-        tagIds,
-        userMap,
-      });
-      return;
+      // A new thread takes the same status-line rule as an existing one: a
+      // review_requested run that creates the thread still pings the reviewer.
+      // The mapping is saved first, so re-running a job whose post failed
+      // takes the existing-thread path and posts it.
+      target = { threadId: newId, thread: { tags: [tagIds[desired]], name, archived: false } };
     }
-    const thread = await readThread(threadId, threadName(current));
-    await syncExistingThread({
-      threadId,
-      thread,
-      desired,
-      pr: current,
-      event,
-      eventName,
-      tagIds,
-      userMap,
-    });
+    await syncThread({ ...target, desired, pr: current, event, eventName, tagIds, userMap });
   }
 
   // Last step, so a failed Discord call above leaves the mapping for a retry.
@@ -654,18 +635,18 @@ async function renameThread(threadId, pr) {
   console.log(`Renamed thread ${threadId}`);
 }
 
-// The thread's current tags, name and archive state, as syncExistingThread
-// takes them. `newName` is the name the thread should have.
-async function readThread(threadId, newName) {
+// The thread's current tags, name and archive state, as syncThread takes
+// them. `stubName` is only the dry-run default for the current name.
+async function readThread(threadId, stubName) {
   if (DRY_RUN) {
     // Test hooks: simulate a thread that already has a given tag/name/archived
     // state without network access. DRY_RUN_CURRENT_THREAD_NAME uses ?? (not ||)
-    // so empty string is a valid stub; when unset, defaults to newName (no name
+    // so empty string is a valid stub; when unset, defaults to stubName (no name
     // change). DRY_RUN_CURRENT_ARCHIVED defaults to false when unset.
     const stub = process.env.DRY_RUN_CURRENT_TAG_ID;
     return {
       tags: stub ? [stub] : [],
-      name: process.env.DRY_RUN_CURRENT_THREAD_NAME ?? newName,
+      name: process.env.DRY_RUN_CURRENT_THREAD_NAME ?? stubName,
       archived: process.env.DRY_RUN_CURRENT_ARCHIVED === "true",
     };
   }
@@ -680,7 +661,7 @@ async function readThread(threadId, newName) {
 // Bring a thread's tag, name and archive state in line with `desired`,
 // posting a status line when something worth reporting changed. `thread` is
 // its current state, from readThread or, for a thread just created, known.
-async function syncExistingThread({ threadId, thread, desired, pr, event, eventName, tagIds, userMap }) {
+async function syncThread({ threadId, thread, desired, pr, event, eventName, tagIds, userMap }) {
   const desiredTagId = tagIds[desired];
   const newName = threadName(pr);
   const { tags: currentTags, name: currentName, archived: currentlyArchived } = thread;
@@ -725,7 +706,7 @@ async function syncExistingThread({ threadId, thread, desired, pr, event, eventN
     if (nameChanged) {
       console.log(`Updated thread ${threadId} name`);
     } else {
-      console.log(`Tag already ${desired}; nothing to do.`);
+      console.log(`Thread ${threadId} already ${desired}; no update needed.`);
     }
     return;
   }

@@ -242,6 +242,9 @@ In one test repo, after wiring the caller workflow:
   The prefix is removed if the PR is reopened. Editing a merged/closed PR's title
   preserves the prefix.
 - Pushed commits do **not** post in the thread; only review/state events do.
+- When a `review_requested` or `ready_for_review` event is the first the action sees for
+  a PR, it creates the thread and then posts that event's status line, the same as
+  for an existing thread.
 - Each sync event sets **exactly one** lifecycle forum tag on the thread. Any other
   forum tags manually added to the thread will be removed on the next update.
 

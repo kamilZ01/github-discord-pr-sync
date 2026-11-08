@@ -11,6 +11,8 @@
 // DRY_RUN_CURRENT_THREAD_NAME to simulate the current thread name (defaults
 // to the computed new name when unset, so existing tests are unaffected), and
 // DRY_RUN_CURRENT_ARCHIVED to simulate an archived thread (defaults to false).
+// These hooks only apply to an existing thread: a thread the run just created
+// has its state built from what was sent.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -120,6 +122,8 @@ test("opened PR: creates new thread with Open tag and writes mapping label", () 
   assert.match(r.stdout, /"name":"discord-thread:DRY_RUN_THREAD_ID"/);
   assert.match(r.stdout, /\/issues\/42\/labels/);
   assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID with tag Open/);
+  // Reviewers are pinged by their own review_requested run, never here.
+  assert.doesNotMatch(r.stdout, /DRY_RUN_THREAD_ID\/messages/);
   // Without a user map, author renders as plain text and no users are pinged.
   assert.match(r.stdout, /by @kz/);
   assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\]\}/);
