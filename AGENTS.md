@@ -19,6 +19,9 @@ Evidence.
 - Consumers pin a release commit SHA (`@<sha> # vX.Y.Z`), so a merge to `main` changes
   nothing for them until a new tag ships.
 - Release tags are annotated and immutable: `vX.Y.Z`, message `vX.Y.Z — <headline>`.
+- After a tag ships, open a docs PR that points the README's caller workflow at the tag's
+  commit SHA (`git rev-list -n1 vX.Y.Z`). That `uses:` line is the README's only copy of
+  the SHA, and Dependabot never edits the README.
 - `v1` is frozen at v1.3.3 and the README tells consumers so. Leave it where it is. Tagging
   is the maintainer's call, so ask before you create one.
 
