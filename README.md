@@ -107,7 +107,7 @@ jobs:
       group: discord-pr-sync-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
-      - uses: kamilZ01/github-discord-pr-sync@f04cfe2b9922c8bcfa0ed21f0175358e3514727c # v1.3.3
+      - uses: kamilZ01/github-discord-pr-sync@5374d19221802221eb269a48a173c4986187a36c # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           discord-bot-token: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -119,7 +119,7 @@ jobs:
 > **Pinning:** Pin to a full commit SHA — it's immutable and the
 > supply-chain-hardening baseline. Every release gets an immutable `vX.Y.Z`
 > tag; reference its commit SHA with the version in a trailing comment, e.g.
-> `@f04cfe2b9922c8bcfa0ed21f0175358e3514727c # v1.3.3`. Dependabot
+> `@5374d19221802221eb269a48a173c4986187a36c # v1.4.0`. Dependabot
 > (github-actions ecosystem) keeps the SHA up to date.
 >
 > Note: the floating `v1` major tag is **not** moved on new releases, so
