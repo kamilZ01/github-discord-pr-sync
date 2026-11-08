@@ -39,6 +39,10 @@ no checkout of this repo is needed in the consumer workflow.
 
 ## One-time setup
 
+> **Runners:** Self-hosted and GHES runners need runner v2.327.1 or newer,
+> because the action's `actions/setup-node` step runs on the node24 runtime.
+> GitHub-hosted runners already meet this.
+
 ### 1. Discord
 
 1. Create a Discord application + bot at <https://discord.com/developers/applications>.
@@ -217,8 +221,6 @@ In one test repo, after wiring the caller workflow:
 
 ## Caveats
 
-- Self-hosted and GHES runners need runner v2.327.1 or newer: the action runs
-  `actions/setup-node` v7, which uses the node24 runtime. GitHub-hosted runners already qualify.
 - The bot needs **Manage Threads**. Without it, thread creation works but tag updates fail.
 - If someone manually deletes the `discord-thread:<id>` label from an open PR, the next
   event creates a duplicate thread.
