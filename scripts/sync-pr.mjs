@@ -304,9 +304,13 @@ async function computeDesiredState(event, eventName, owner, repo) {
   return null;
 }
 
-// ---------- Label helpers ----------
+// ---------- Thread link (PR ↔ Discord thread mapping) ----------
+//
+// The mapping lives in a repo label named `discord-thread:<id>` attached to
+// the PR. Callers only see find / save / release; label names, validation
+// and the stale-payload refetch stay in here.
 
-function findThreadIdFromLabels(pr) {
+function threadIdFromLabels(pr) {
   let found = null;
   for (const lbl of pr.labels || []) {
     if (lbl.name && lbl.name.startsWith(THREAD_LABEL_PREFIX)) {
@@ -318,13 +322,10 @@ function findThreadIdFromLabels(pr) {
       found = lbl.name.slice(THREAD_LABEL_PREFIX.length);
     }
   }
-  return found;
-}
-
-function assertValidDiscordSnowflake(value, context) {
-  if (!DISCORD_SNOWFLAKE_RE.test(value)) {
-    throw new Error(`Invalid Discord thread id in label (${context}): "${value}"`);
+  if (found && !DISCORD_SNOWFLAKE_RE.test(found)) {
+    throw new Error(`Invalid Discord thread id in label (${THREAD_LABEL_PREFIX}): "${found}"`);
   }
+  return found;
 }
 
 async function ensureLabel(owner, repo, name, color, description) {
@@ -339,11 +340,43 @@ async function ensureLabel(owner, repo, name, color, description) {
   }
 }
 
-async function addLabel(owner, repo, number, name) {
-  await gh(`/repos/${owner}/${repo}/issues/${number}/labels`, {
-    method: "POST",
-    body: JSON.stringify({ labels: [name] }),
-  });
+function threadLink({ owner, repo }) {
+  const labelPath = (threadId) =>
+    `/repos/${owner}/${repo}/labels/${encodeURIComponent(THREAD_LABEL_PREFIX + threadId)}`;
+
+  return {
+    // Thread id for this PR, or null. Checks the event payload first, then
+    // (unless `payloadOnly`) re-fetches the PR, since payload labels may be
+    // stale when workflow runs race. Throws on a malformed label.
+    async find(pr, { payloadOnly = false } = {}) {
+      const fromPayload = threadIdFromLabels(pr);
+      if (fromPayload || payloadOnly) return fromPayload;
+      const res = await gh(`/repos/${owner}/${repo}/pulls/${pr.number}`);
+      return threadIdFromLabels(await res.json());
+    },
+
+    // Record that this PR's thread is `threadId`.
+    async save(pr, threadId) {
+      await ensureLabel(owner, repo, "discord-managed", "ededed", "Auto-managed by github-discord-pr-sync");
+      const name = `${THREAD_LABEL_PREFIX}${threadId}`;
+      await ensureLabel(owner, repo, name, "ededed", "Discord thread mapping");
+      await gh(`/repos/${owner}/${repo}/issues/${pr.number}/labels`, {
+        method: "POST",
+        body: JSON.stringify({ labels: [name] }),
+      });
+    },
+
+    // Forget the mapping by deleting the repo label (which also removes it
+    // from the PR). Idempotent: an already-deleted label is not an error.
+    async release(threadId) {
+      try {
+        await gh(labelPath(threadId), { method: "DELETE" });
+      } catch (err) {
+        if (err.status !== 404) throw err;
+      }
+      console.log(`Released label ${THREAD_LABEL_PREFIX}${threadId}`);
+    },
+  };
 }
 
 // ---------- Discord ops ----------
@@ -509,6 +542,7 @@ async function main() {
 
   const tagIds = await resolveTagIds();
   const userMap = loadUserMap();
+  const link = threadLink({ owner, repo });
 
   // Title-only edit: just rename the thread, no tag change.
   if (eventName === "pull_request" && event.action === "edited") {
@@ -517,12 +551,11 @@ async function main() {
       console.log("Edit event with no title change; nothing to do.");
       return;
     }
-    const threadId = findThreadIdFromLabels(pr);
+    const threadId = await link.find(pr, { payloadOnly: true });
     if (!threadId) {
       console.log("Title edited but no thread label yet; nothing to rename.");
       return;
     }
-    assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
     let isArchived = false;
     if (DRY_RUN) {
       isArchived = process.env.DRY_RUN_CURRENT_ARCHIVED === "true";
@@ -537,6 +570,7 @@ async function main() {
     if (pr.state === "closed") fields.archived = true;
     await updateThread(threadId, fields);
     console.log(`Renamed thread ${threadId}`);
+    if (pr.state === "closed") await link.release(threadId);
     return;
   }
 
@@ -547,34 +581,18 @@ async function main() {
   }
   const desiredTagId = tagIds[desired];
 
-  let threadId = findThreadIdFromLabels(pr);
-  if (threadId) {
-    assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
+  let threadId = await link.find(pr);
+
+  if (!threadId && pr.state === "closed") {
+    // Closing releases the mapping, so a later event (a review or dismissal
+    // on a closed PR) has nothing to look up. Don't start a new thread.
+    console.log("PR is closed and has no thread label; skipping.");
+    return;
   }
 
   if (!threadId) {
-    // Event payload labels may be stale (race with concurrent workflow runs).
-    // Re-fetch from API to avoid creating duplicate threads.
-    const freshRes = await gh(`/repos/${owner}/${repo}/pulls/${pr.number}`);
-    const freshPrData = await freshRes.json();
-    threadId = findThreadIdFromLabels(freshPrData);
-    if (threadId) {
-      assertValidDiscordSnowflake(threadId, THREAD_LABEL_PREFIX);
-    }
-  }
-
-  if (!threadId) {
-    await ensureLabel(
-      owner,
-      repo,
-      "discord-managed",
-      "ededed",
-      "Auto-managed by github-discord-pr-sync"
-    );
     threadId = await createForumThread(pr, desiredTagId, userMap);
-    const labelName = `${THREAD_LABEL_PREFIX}${threadId}`;
-    await ensureLabel(owner, repo, labelName, "ededed", "Discord thread mapping");
-    await addLabel(owner, repo, pr.number, labelName);
+    await link.save(pr, threadId);
     if (isTerminalState(desired)) {
       await updateThread(threadId, { archived: true });
     }
@@ -641,6 +659,7 @@ async function main() {
     } else {
       console.log(`Tag already ${desired}; nothing to do.`);
     }
+    if (pr.state === "closed") await link.release(threadId);
     return;
   }
 
@@ -657,6 +676,8 @@ async function main() {
     await updateThread(threadId, { archived: true });
   }
   console.log(`Updated thread ${threadId} → ${desired}`);
+  // Last step, so a failed Discord call above leaves the mapping for a retry.
+  if (pr.state === "closed") await link.release(threadId);
 }
 
 main().catch((err) => {

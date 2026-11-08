@@ -693,3 +693,73 @@ test("merged PR with long title: prefix + title truncated to 100 chars", () => {
   assert.ok(threadName.endsWith("…"), "should end with ellipsis");
   assert.ok(threadName.length <= 100, `thread name should be ≤100 chars, got ${threadName.length}`);
 });
+
+// ---------- Thread label release on close ----------
+
+function runMutatedFixture(fixture, eventName, mutate, extraEnv = {}) {
+  const base = JSON.parse(readFileSync(join(FIXTURES, fixture), "utf8"));
+  mutate(base);
+  const dir = mkdtempSync(join(tmpdir(), "sync-pr-test-"));
+  const fixturePath = join(dir, fixture);
+  writeFileSync(fixturePath, JSON.stringify(base), "utf8");
+  return run({
+    env: { GITHUB_EVENT_PATH: fixturePath, GITHUB_EVENT_NAME: eventName, ...extraEnv },
+  });
+}
+
+const DELETE_THREAD_LABEL =
+  "DELETE https://api.github.com/repos/KZ-OWNER/test-repo/labels/discord-thread%3A1234567890";
+
+test("merged PR: deletes its discord-thread label from the repo", () => {
+  const r = runFixture("closed_merged.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("closed without merge: deletes its discord-thread label from the repo", () => {
+  const r = runFixture("closed_not_merged.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("event on a closed PR whose label is gone: no new thread, no label", () => {
+  const r = runMutatedFixture("review_changes_requested.json", "pull_request_review", (e) => {
+    e.pull_request.state = "closed";
+    e.pull_request.merged = true;
+    e.pull_request.labels = [];
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com/);
+  assert.doesNotMatch(r.stdout, /POST https:\/\/api\.github\.com/);
+  assert.match(r.stdout, /closed and has no thread/);
+});
+
+test("reopened PR whose label was released: starts a new thread and keeps its label", () => {
+  const r = runMutatedFixture("reopened.json", "pull_request", (e) => {
+    e.pull_request.labels = [];
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID/);
+  assert.doesNotMatch(r.stdout, /DELETE/);
+});
+
+test("title edit on a merged PR that still has a label: renames, then deletes the label", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Renamed thread 1234567890/);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+  assert.ok(r.stdout.indexOf("Renamed thread") < r.stdout.indexOf(DELETE_THREAD_LABEL));
+});
+
+test("open PR events never delete the thread label", () => {
+  for (const [fixture, eventName] of [
+    ["review_requested.json", "pull_request"],
+    ["edited_title.json", "pull_request"],
+    ["reopened.json", "pull_request"],
+  ]) {
+    const r = runFixture(fixture, eventName);
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /DELETE/, fixture);
+  }
+});

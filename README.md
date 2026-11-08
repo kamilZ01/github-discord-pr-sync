@@ -6,7 +6,8 @@ reflect the PR's lifecycle (`Draft`, `Open`, `Changes Requested`, `Re-review Req
 
 - **No infrastructure.** Runs as a GitHub Actions composite action.
 - **No dependencies.** A single ~400-line Node 24 script using built-in `fetch`.
-- **No external storage.** PR ↔ thread mapping lives in a `discord-thread:<id>` PR label.
+- **No external storage.** PR ↔ thread mapping lives in a `discord-thread:<id>` PR label,
+  which is deleted from the repo once the PR is closed or merged.
 - **Cross-org.** This repo is public so any repo (yours or a colleague's) can use the
   action.
 
@@ -25,8 +26,11 @@ GitHub PR event ──▶ caller workflow in consumer repo
                        ├── creates a forum thread (first event for a PR)
                        │   then writes `discord-thread:<id>` label on the PR
                        │
-                       └── on later events, finds the thread via the label,
-                           PATCHes its forum tags, and posts a status line
+                       ├── on later events, finds the thread via the label,
+                       │   PATCHes its forum tags, and posts a status line
+                       │
+                       └── when the PR is merged or closed, deletes the
+                           `discord-thread:<id>` label from the repo
 ```
 
 GitHub resolves `github.action_path` to this action's files at the pinned ref —
@@ -172,6 +176,18 @@ similar branches don't need network access. Set `DISCORD_TAG_IDS_JSON` (as shown
 to skip the Discord channel fetch — otherwise the script will still call Discord to
 resolve tag IDs, since that GET is not stubbed.
 
+## Cleaning up old labels
+
+Labels for PRs closed before this behaviour shipped stay until that PR gets another
+event. To clear them in one go, run the cleanup script. It deletes `discord-thread:*`
+labels whose PRs are all closed (or that are on no PR) and keeps labels on open PRs.
+It only prints its plan unless you pass `--apply`:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) node scripts/cleanup-labels.mjs owner/repo-a owner/repo-b
+GITHUB_TOKEN=$(gh auth token) node scripts/cleanup-labels.mjs owner/repo-a owner/repo-b --apply
+```
+
 ## Tests
 
 ```bash
@@ -189,7 +205,8 @@ In one test repo, after wiring the caller workflow:
 - [ ] Re-request the same reviewer → tag flips to `Re-review Requested`.
 - [ ] Submit an `Approve` review → tag reflects aggregate state (`Approved` if no other reviewer has outstanding changes requested).
 - [ ] Edit the PR title → thread name updates.
-- [ ] Merge the PR → tag flips to `Merged`, thread name gets `🟣` prefix.
+- [ ] Merge the PR → tag flips to `Merged`, thread name gets `🟣` prefix, and the
+      `discord-thread:<id>` label is gone from the repo's labels page.
 
 > **Note:** In multi-reviewer scenarios the tag reflects the aggregate review
 > state, not just the latest individual review. For example, if reviewer A
@@ -199,8 +216,12 @@ In one test repo, after wiring the caller workflow:
 ## Caveats
 
 - The bot needs **Manage Threads**. Without it, thread creation works but tag updates fail.
-- If someone manually deletes the `discord-thread:<id>` label, the next event creates a
-  duplicate thread.
+- If someone manually deletes the `discord-thread:<id>` label from an open PR, the next
+  event creates a duplicate thread.
+- Closing or merging a PR deletes its label, so the thread link is gone afterwards:
+  - Later events on the closed PR (title edits, reviews) no longer reach the old thread,
+    and no new thread is created for them.
+  - Reopening a closed PR starts a **new** thread; the old one stays archived.
 - Discord forum tag names are matched **case-sensitively** — they must be exact.
 - PRs from forks are skipped (no access to secrets). Bot reviews are ignored, but PRs
   opened by bots (e.g. Dependabot) still get threads.
