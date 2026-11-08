@@ -269,6 +269,29 @@ test("review_requested with tag already Open: posts 🔔 mention without tag upd
   assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["111111111111111111"\]\}/);
 });
 
+test("review_requested before any thread exists: creates the thread, then pings the reviewer", () => {
+  // CODEOWNERS requests reviewers as the PR opens, so the review_requested run
+  // can start before the opened run. The opened run then finds the tag already
+  // Open and posts nothing, so this run is the reviewer's only ping.
+  const r = runMutatedFixture(
+    "review_requested.json",
+    "pull_request",
+    (e) => {
+      e.pull_request.labels = [];
+    },
+    { DISCORD_USER_MAP_JSON: JSON.stringify({ alice: "111111111111111111" }) },
+  );
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  assert.match(r.stdout, /"name":"discord-thread:DRY_RUN_THREAD_ID"/);
+  assert.match(
+    r.stdout,
+    /POST https:\/\/discord\.com\/api\/v10\/channels\/DRY_RUN_THREAD_ID\/messages/,
+  );
+  assert.match(r.stdout, /🔔 Review requested from <@111111111111111111>/);
+  assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\],"users":\["111111111111111111"\]\}/);
+});
+
 test("review submitted: self-review (author === reviewer) does not cc author", () => {
   const base = JSON.parse(readFileSync(join(FIXTURES, "review_changes_requested.json"), "utf8"));
   // Author reviewing their own PR — bob becomes both reviewer and PR author.
@@ -509,6 +532,23 @@ test("ready_for_review with tag already matching recomputed state: still posts s
   // No tag PATCH needed
   assert.doesNotMatch(r.stdout, /"applied_tags":/);
   // Status line still posted
+  assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
+});
+
+test("ready_for_review before any thread exists: creates the thread, then posts the status line", () => {
+  // A new thread takes the same status-line rule as an existing one.
+  const r = runMutatedFixture("ready_for_review.json", "pull_request", (e) => {
+    e.pull_request.labels = [];
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  assert.match(r.stdout, /Created thread DRY_RUN_THREAD_ID with tag Open/);
+  // The new thread already has the tag and name: no PATCH.
+  assert.doesNotMatch(r.stdout, /PATCH/);
+  assert.match(
+    r.stdout,
+    /POST https:\/\/discord\.com\/api\/v10\/channels\/DRY_RUN_THREAD_ID\/messages/,
+  );
   assert.match(r.stdout, /🟢 Marked as ready for review by @kz/);
 });
 

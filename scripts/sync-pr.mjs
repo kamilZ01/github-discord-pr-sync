@@ -603,9 +603,36 @@ async function main() {
       const newId = await createForumThread(current, tagIds[desired], userMap);
       await mapping.save(current, newId);
       console.log(`Created thread ${newId} with tag ${desired}`);
+      // The new thread already has the desired tag and name, so this posts
+      // only the status line the event calls for. CODEOWNERS requests
+      // reviewers as the PR opens, so a review_requested run can create the
+      // thread, and the opened run that follows posts nothing: this is the
+      // reviewer's only ping. It runs after save, so a failed post is retried
+      // through the existing-thread path.
+      const created = { tags: [tagIds[desired]], name: threadName(current), archived: false };
+      await syncExistingThread({
+        threadId: newId,
+        thread: created,
+        desired,
+        pr: current,
+        event,
+        eventName,
+        tagIds,
+        userMap,
+      });
       return;
     }
-    await syncExistingThread({ threadId, desired, pr: current, event, eventName, tagIds, userMap });
+    const thread = await readThread(threadId, threadName(current));
+    await syncExistingThread({
+      threadId,
+      thread,
+      desired,
+      pr: current,
+      event,
+      eventName,
+      tagIds,
+      userMap,
+    });
   }
 
   // Last step, so a failed Discord call above leaves the mapping for a retry.
@@ -627,30 +654,36 @@ async function renameThread(threadId, pr) {
   console.log(`Renamed thread ${threadId}`);
 }
 
-// Bring an existing thread's tag, name and archive state in line with
-// `desired`, posting a status line when something worth reporting changed.
-async function syncExistingThread({ threadId, desired, pr, event, eventName, tagIds, userMap }) {
-  const desiredTagId = tagIds[desired];
-  // Existing thread: compare current tags, name, and archive state.
-  const newName = threadName(pr);
-  let currentTags = [];
-  let currentName = "";
-  let currentlyArchived = false;
+// The thread's current tags, name and archive state, as syncExistingThread
+// takes them. `newName` is the name the thread should have.
+async function readThread(threadId, newName) {
   if (DRY_RUN) {
     // Test hooks: simulate a thread that already has a given tag/name/archived
     // state without network access. DRY_RUN_CURRENT_THREAD_NAME uses ?? (not ||)
     // so empty string is a valid stub; when unset, defaults to newName (no name
     // change). DRY_RUN_CURRENT_ARCHIVED defaults to false when unset.
     const stub = process.env.DRY_RUN_CURRENT_TAG_ID;
-    if (stub) currentTags = [stub];
-    currentName = process.env.DRY_RUN_CURRENT_THREAD_NAME ?? newName;
-    currentlyArchived = process.env.DRY_RUN_CURRENT_ARCHIVED === "true";
-  } else {
-    const thread = await getThread(threadId);
-    currentTags = thread.applied_tags || [];
-    currentName = thread.name || "";
-    currentlyArchived = thread.thread_metadata?.archived ?? false;
+    return {
+      tags: stub ? [stub] : [],
+      name: process.env.DRY_RUN_CURRENT_THREAD_NAME ?? newName,
+      archived: process.env.DRY_RUN_CURRENT_ARCHIVED === "true",
+    };
   }
+  const thread = await getThread(threadId);
+  return {
+    tags: thread.applied_tags || [],
+    name: thread.name || "",
+    archived: thread.thread_metadata?.archived ?? false,
+  };
+}
+
+// Bring a thread's tag, name and archive state in line with `desired`,
+// posting a status line when something worth reporting changed. `thread` is
+// its current state, from readThread or, for a thread just created, known.
+async function syncExistingThread({ threadId, thread, desired, pr, event, eventName, tagIds, userMap }) {
+  const desiredTagId = tagIds[desired];
+  const newName = threadName(pr);
+  const { tags: currentTags, name: currentName, archived: currentlyArchived } = thread;
 
   const tagChanged = !(currentTags.length === 1 && currentTags[0] === desiredTagId);
   const nameChanged = currentName !== newName;

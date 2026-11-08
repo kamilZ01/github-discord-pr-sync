@@ -154,7 +154,8 @@ To get a Discord user ID, enable Developer Mode in Discord → right-click a use
 User ID**. Once configured, the action posts real pings:
 
 - `pull_request.opened` → pings the PR author in the initial post, so the notification itself is a direct jump-link to the new forum thread
-- `pull_request.review_requested` → pings the requested reviewer
+- `pull_request.review_requested` → pings the requested reviewer, including reviewers that
+  CODEOWNERS requests as the PR opens (even when that event's run creates the thread)
 - `pull_request_review.submitted` (approve / changes requested) → pings the PR author
 
 Only the explicit user IDs in this map are allowed to ping; `@everyone`, `@here`, and
