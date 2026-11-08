@@ -41,6 +41,10 @@ runs:
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '24'
+        # The sync script has no dependencies. Without this, setup-node v5+
+        # turns on npm caching when the caller's checked-out package.json sets
+        # packageManager, and fails the step if there is no lockfile.
+        package-manager-cache: false
 
     - name: Run sync script
       shell: bash
