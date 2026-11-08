@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Sync GitHub PR events to a Discord forum thread.
-// Zero dependencies. Node 20+ (uses built-in fetch).
+// Zero dependencies (uses built-in fetch). Runs on the Node version action.yml sets up.
 
 import { readFileSync } from "node:fs";
 

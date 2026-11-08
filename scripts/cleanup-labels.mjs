@@ -7,7 +7,7 @@
 //
 //   GITHUB_TOKEN=$(gh auth token) node scripts/cleanup-labels.mjs owner/repo [owner/repo ...] [--apply]
 //
-// Zero dependencies. Node 20+.
+// Zero dependencies (uses built-in fetch). Run it with Node 24 or newer, as CI does.
 
 const THREAD_LABEL_PREFIX = "discord-thread:";
 const APPLY = process.argv.includes("--apply");
