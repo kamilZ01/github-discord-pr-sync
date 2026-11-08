@@ -39,6 +39,10 @@ no checkout of this repo is needed in the consumer workflow.
 
 ## One-time setup
 
+> **Runners:** Self-hosted and GHES runners need runner v2.327.1 or newer,
+> because the action's `actions/setup-node` step runs on the node24 runtime.
+> GitHub-hosted runners already meet this.
+
 ### 1. Discord
 
 1. Create a Discord application + bot at <https://discord.com/developers/applications>.
