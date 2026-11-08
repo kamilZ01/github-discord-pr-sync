@@ -315,8 +315,8 @@ async function computeDesiredState(event, eventName, owner, repo) {
 // ---------- Thread mapping (PR ↔ Discord thread) ----------
 //
 // The mapping lives in a repo label named `discord-thread:<id>` attached to
-// the PR. Callers only see find / save / release; label names and
-// validation stay in here.
+// the PR. Callers only see find / prepare / save / release; label names
+// and validation stay in here.
 
 async function ensureLabel(owner, repo, name, color, description) {
   try {
@@ -351,9 +351,14 @@ function threadMapping({ owner, repo }) {
       return found;
     },
 
+    // Call before creating a thread. Writes a label, so a token that can't
+    // write labels fails here, before a thread exists that `save` can't record.
+    async prepare() {
+      await ensureLabel(owner, repo, "discord-managed", "ededed", "Auto-managed by github-discord-pr-sync");
+    },
+
     // Record that this PR's thread is `threadId`.
     async save(pr, threadId) {
-      await ensureLabel(owner, repo, "discord-managed", "ededed", "Auto-managed by github-discord-pr-sync");
       const name = `${THREAD_LABEL_PREFIX}${threadId}`;
       await ensureLabel(owner, repo, name, "ededed", "Discord thread mapping");
       await gh(`/repos/${owner}/${repo}/issues/${pr.number}/labels`, {
@@ -362,16 +367,21 @@ function threadMapping({ owner, repo }) {
       });
     },
 
-    // Forget the mapping by deleting the repo label (which also removes it
-    // from the PR). Idempotent: an already-deleted label is not an error.
-    async release(threadId) {
-      const name = `${THREAD_LABEL_PREFIX}${threadId}`;
-      try {
-        await gh(`/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`, { method: "DELETE" });
-      } catch (err) {
-        if (err.status !== 404) throw err;
+    // Forget the mapping by deleting every thread label on `pr` from the
+    // repo (which also removes it from the PR). That includes extra labels
+    // `find` ignores, left by the old duplicate-thread race. Idempotent: an
+    // already-deleted label is not an error.
+    async release(pr) {
+      for (const lbl of pr.labels || []) {
+        const name = lbl.name;
+        if (!name || !name.startsWith(THREAD_LABEL_PREFIX)) continue;
+        try {
+          await gh(`/repos/${owner}/${repo}/labels/${encodeURIComponent(name)}`, { method: "DELETE" });
+        } catch (err) {
+          if (err.status !== 404) throw err;
+        }
+        console.log(`Released label ${name}`);
       }
-      console.log(`Released label ${name}`);
     },
   };
 }
@@ -558,7 +568,9 @@ async function main() {
     return;
   }
 
-  if (eventName === "pull_request" && event.action === "edited") {
+  // On a closed PR this may be the last run that sees the label, so any event,
+  // edits included, takes the full sync to the final state below.
+  if (eventName === "pull_request" && event.action === "edited" && !closed) {
     // Title-only edit: just rename the thread, no tag change.
     if (!event.changes?.title) {
       console.log("Edit event with no title change; nothing to do.");
@@ -579,6 +591,7 @@ async function main() {
       return;
     }
     if (!threadId) {
+      await mapping.prepare();
       const newId = await createForumThread(current, tagIds[desired], userMap);
       await mapping.save(current, newId);
       console.log(`Created thread ${newId} with tag ${desired}`);
@@ -588,7 +601,7 @@ async function main() {
   }
 
   // Last step, so a failed Discord call above leaves the mapping for a retry.
-  if (closed) await mapping.release(threadId);
+  if (closed) await mapping.release(current);
 }
 
 async function renameThread(threadId, pr) {

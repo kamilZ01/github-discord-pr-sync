@@ -125,6 +125,17 @@ test("opened PR: creates new thread with Open tag and writes mapping label", () 
   assert.match(r.stdout, /"allowed_mentions":\{"parse":\[\]\}/);
 });
 
+test("opened PR: ensures discord-managed label before creating the thread", () => {
+  // A token that can't write labels must fail before a Discord thread exists,
+  // or every retry leaves another orphan thread behind.
+  const r = runFixture("opened.json", "pull_request");
+  assert.equal(r.code, 0, r.stderr);
+  const labelIdx = r.stdout.indexOf('"name":"discord-managed"');
+  const threadIdx = r.stdout.indexOf("POST https://discord.com/api/v10/channels/1234/threads");
+  assert.ok(labelIdx > -1 && threadIdx > -1, r.stdout);
+  assert.ok(labelIdx < threadIdx, "discord-managed must be ensured before the thread is created");
+});
+
 test("opened PR with author in user map: pings author in initial post", () => {
   const r = runFixture("opened.json", "pull_request", {
     DISCORD_USER_MAP_JSON: JSON.stringify({ kz: "666666666666666666" }),
@@ -416,12 +427,19 @@ test("closed without merge: updates thread to Closed tag and 🔴 prefixed name"
   assert.match(r.stdout, /Updated thread 1234567890 → Closed/);
 });
 
+// Title edits on a closed PR go through the full sync (see below), so these
+// stub the thread as already Merged under its old name.
+const MERGED_THREAD_OLD_NAME = {
+  DRY_RUN_CURRENT_TAG_ID: "6",
+  DRY_RUN_CURRENT_THREAD_NAME: "🟣 #42 Add retry logic",
+};
+
 test("title edit on merged PR: thread name includes 🟣 prefix", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request");
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /PATCH https:\/\/discord\.com\/api\/v10\/channels\/1234567890/);
   assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
-  assert.match(r.stdout, /Renamed thread 1234567890/);
+  assert.match(r.stdout, /Updated thread 1234567890 name/);
   assert.doesNotMatch(r.stdout, /applied_tags/);
 });
 
@@ -536,7 +554,8 @@ test("stale payload labels: fresh refetch finds thread label, skips creation", (
 });
 
 test("stale payload labels: fresh refetch finds no label, creates thread normally", () => {
-  // No DRY_RUN_FRESH_PR_JSON set — default stub returns { labels: [] }
+  // No DRY_RUN_FRESH_PR_JSON set — the stub returns the event's own
+  // pull_request, which in opened.json has no labels.
   const r = runFixture("opened.json", "pull_request");
   assert.equal(r.code, 0, r.stderr);
   // Thread creation proceeds as before
@@ -587,16 +606,17 @@ test("closed without merge: thread is archived", () => {
   assert.ok(archiveIdx > postIdx, "archive must come after status message");
 });
 
-test("title edit on merged PR: archives in the same PATCH as rename", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request");
+test("title edit on merged PR: renames, then archives", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
   assert.equal(r.code, 0, r.stderr);
-  // Single PATCH should contain both name and archived
-  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
-  assert.match(r.stdout, /"archived":true/);
+  const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
+  assert.ok(renameIdx > -1, "should rename");
+  assert.ok(r.stdout.indexOf('"archived":true') > renameIdx, "should archive after rename");
 });
 
 test("title edit on merged PR (thread already archived): unarchives before rename", () => {
   const r = runFixture("edited_title_merged.json", "pull_request", {
+    ...MERGED_THREAD_OLD_NAME,
     DRY_RUN_CURRENT_ARCHIVED: "true",
   });
   assert.equal(r.code, 0, r.stderr);
@@ -745,11 +765,34 @@ test("reopened PR whose label was released: starts a new thread and keeps its la
 });
 
 test("title edit on a merged PR that still has a label: renames, then deletes the label", () => {
-  const r = runFixture("edited_title_merged.json", "pull_request");
+  const r = runFixture("edited_title_merged.json", "pull_request", MERGED_THREAD_OLD_NAME);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /Renamed thread 1234567890/);
+  const renameIdx = r.stdout.indexOf('"name":"🟣 #42 Add retry logic to token refresh (v2)"');
+  assert.ok(renameIdx > -1, r.stdout);
+  assert.ok(renameIdx < r.stdout.indexOf(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("title edit on a merged PR whose thread is on a stale tag: syncs to Merged, then deletes the label", () => {
+  const r = runFixture("edited_title_merged.json", "pull_request", {
+    DRY_RUN_CURRENT_TAG_ID: "5",
+    DRY_RUN_CURRENT_THREAD_NAME: "#42 Add retry logic",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["6"\]/);
+  assert.match(r.stdout, /"name":"🟣 #42 Add retry logic to token refresh \(v2\)"/);
+  assert.match(r.stdout, /"archived":true/);
+  assert.ok(r.stdout.indexOf('"applied_tags":["6"]') < r.stdout.indexOf(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("body-only edit on a merged PR that still has a label: syncs to Merged, archives, deletes the label", () => {
+  const r = runMutatedFixture("edited_body_only.json", "pull_request", (e) => {
+    e.pull_request.state = "closed";
+    e.pull_request.merged = true;
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["6"\]/);
+  assert.match(r.stdout, /"archived":true/);
   assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
-  assert.ok(r.stdout.indexOf("Renamed thread") < r.stdout.indexOf(DELETE_THREAD_LABEL));
 });
 
 test("open PR events never delete the thread label", () => {
@@ -785,6 +828,33 @@ test("stale open payload, PR merged since: syncs to Merged, archives, deletes th
   assert.doesNotMatch(r.stdout, /"applied_tags":\["2"\]/);
   assert.match(r.stdout, /"archived":true/);
   assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("stale open payload, PR closed without merge since: syncs to Closed, archives, deletes the label", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("review_requested.json", (pr) => {
+      pr.state = "closed";
+      pr.merged = false;
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["7"\]/);
+  assert.match(r.stdout, /"archived":true/);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("open PR whose label was released while the run was queued: starts a new thread", () => {
+  // Deliberate: the fresh PR is the source of truth, so a label that is only
+  // in the stale payload does not count. The old thread was archived on close.
+  const r = runFixture("review_requested.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("review_requested.json", (pr) => {
+      pr.labels = [];
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /POST https:\/\/discord\.com\/api\/v10\/channels\/1234\/threads/);
+  assert.doesNotMatch(r.stdout, /channels\/1234567890/);
+  assert.match(r.stdout, /"name":"discord-thread:DRY_RUN_THREAD_ID"/);
 });
 
 test("stale open payload, PR merged and label already gone: no new thread", () => {
@@ -830,6 +900,18 @@ test("closed event for a PR that never had a thread: creates nothing", () => {
   assert.equal(r.code, 0, r.stderr);
   assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com/);
   assert.doesNotMatch(r.stdout, /POST https:\/\/api\.github\.com/);
+});
+
+test("merged PR with two thread labels (old duplicate-thread race): deletes both", () => {
+  const r = runMutatedFixture("closed_merged.json", "pull_request", (e) => {
+    e.pull_request.labels.push({ name: "discord-thread:2222222222222222" });
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+  assert.ok(
+    r.stdout.includes("DELETE https://api.github.com/repos/KZ-OWNER/test-repo/labels/discord-thread%3A2222222222222222"),
+    r.stdout,
+  );
 });
 
 test("label already deleted (404): still succeeds", () => {
