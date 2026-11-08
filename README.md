@@ -5,7 +5,8 @@ reflect the PR's lifecycle (`Draft`, `Open`, `Changes Requested`, `Re-review Req
 `Approved`, `Merged`, `Closed`).
 
 - **No infrastructure.** Runs as a GitHub Actions composite action.
-- **No dependencies.** A single ~400-line Node 24 script using built-in `fetch`.
+- **No dependencies.** The action is a single Node 24 script using built-in `fetch`
+  (plus an optional one-off cleanup script).
 - **No external storage.** PR ↔ thread mapping lives in a `discord-thread:<id>` PR label,
   which is deleted from the repo once the PR is closed or merged.
 - **Cross-org.** This repo is public so any repo (yours or a colleague's) can use the
@@ -23,7 +24,7 @@ GitHub PR event ──▶ caller workflow in consumer repo
                        ▼
                scripts/sync-pr.mjs
                        │
-                       ├── creates a forum thread (first event for a PR)
+                       ├── creates a forum thread (first event for an open PR)
                        │   then writes `discord-thread:<id>` label on the PR
                        │
                        ├── on later events, finds the thread via the label,
@@ -170,7 +171,8 @@ DISCORD_TAG_IDS_JSON='{"Draft":"1","Open":"2","Changes Requested":"3","Re-review
 node scripts/sync-pr.mjs --dry-run
 ```
 
-`--dry-run` logs the would-be Discord writes instead of sending them. The PR-reviews
+`--dry-run` logs the would-be Discord and GitHub writes instead of sending them. The
+fresh PR GET (`/pulls/:n`, made on every run) returns the event's own PR, and the PR-reviews
 GET (`/pulls/:n/reviews`) is also stubbed to return `[]` so `review_requested` and
 similar branches don't need network access. Set `DISCORD_TAG_IDS_JSON` (as shown above)
 to skip the Discord channel fetch — otherwise the script will still call Discord to
@@ -222,6 +224,11 @@ In one test repo, after wiring the caller workflow:
   - Later events on the closed PR (title edits, reviews) no longer reach the old thread,
     and no new thread is created for them.
   - Reopening a closed PR starts a **new** thread; the old one stays archived.
+  - A PR that is already closed when the action first sees it (e.g. closed before the
+    action was installed) gets no thread.
+- Each run fetches the PR's current state first. If the PR was closed after the event
+  fired (runs are queued per PR), the thread is synced to `Merged` / `Closed` and the
+  label is deleted; a close event that arrives after a reopen is skipped.
 - Discord forum tag names are matched **case-sensitively** — they must be exact.
 - PRs from forks are skipped (no access to secrets). Bot reviews are ignored, but PRs
   opened by bots (e.g. Dependabot) still get threads.

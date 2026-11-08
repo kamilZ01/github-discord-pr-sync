@@ -763,3 +763,87 @@ test("open PR events never delete the thread label", () => {
     assert.doesNotMatch(r.stdout, /DELETE/, fixture);
   }
 });
+
+// The event payload is a snapshot; runs are queued per PR, so by the time a
+// run starts the PR may have been closed or reopened. The fresh PR wins.
+
+function freshPrFrom(fixture, mutate) {
+  const pr = JSON.parse(readFileSync(join(FIXTURES, fixture), "utf8")).pull_request;
+  mutate(pr);
+  return JSON.stringify(pr);
+}
+
+test("stale open payload, PR merged since: syncs to Merged, archives, deletes the label", () => {
+  const r = runFixture("review_requested.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("review_requested.json", (pr) => {
+      pr.state = "closed";
+      pr.merged = true;
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /"applied_tags":\["6"\]/);
+  assert.doesNotMatch(r.stdout, /"applied_tags":\["2"\]/);
+  assert.match(r.stdout, /"archived":true/);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("stale open payload, PR merged and label already gone: no new thread", () => {
+  const r = runFixture("opened.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("opened.json", (pr) => {
+      pr.state = "closed";
+      pr.merged = true;
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com/);
+  assert.match(r.stdout, /closed and has no thread label/);
+});
+
+test("review on a merged PR that still has a label: keeps Merged tag, archives, deletes the label", () => {
+  const r = runMutatedFixture("review_changes_requested.json", "pull_request_review", (e) => {
+    e.pull_request.state = "closed";
+    e.pull_request.merged = true;
+  }, { DRY_RUN_CURRENT_TAG_ID: "6", DRY_RUN_CURRENT_ARCHIVED: "true" });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /"applied_tags":\["3"\]/);
+  assert.doesNotMatch(r.stdout, /"archived":false/);
+  assert.ok(r.stdout.includes(DELETE_THREAD_LABEL), r.stdout);
+});
+
+test("stale closed payload, PR reopened since: skips, keeps the label", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_FRESH_PR_JSON: freshPrFrom("closed_merged.json", (pr) => {
+      pr.state = "open";
+      pr.merged = false;
+    }),
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /DELETE/);
+  assert.doesNotMatch(r.stdout, /PATCH/);
+  assert.match(r.stdout, /reopened since/);
+});
+
+test("closed event for a PR that never had a thread: creates nothing", () => {
+  const r = runMutatedFixture("closed_merged.json", "pull_request", (e) => {
+    e.pull_request.labels = [];
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /POST https:\/\/discord\.com/);
+  assert.doesNotMatch(r.stdout, /POST https:\/\/api\.github\.com/);
+});
+
+test("label already deleted (404): still succeeds", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_LABEL_DELETE_STATUS: "404",
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Released label discord-thread:1234567890/);
+});
+
+test("label delete fails for another reason: run fails", () => {
+  const r = runFixture("closed_merged.json", "pull_request", {
+    DRY_RUN_LABEL_DELETE_STATUS: "403",
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /403/);
+});
